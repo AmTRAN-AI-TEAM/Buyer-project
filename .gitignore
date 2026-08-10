@@ -1,0 +1,11 @@
+# 產出檔（每次執行重新生成，不納入版控）
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Excel 暫存檔
+~$*.xlsx
