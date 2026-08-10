@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""由 DPS / PP 原始資料自動生成「整理后」報表。
+"""由 DPS / PP 原始資料自動生成「整理後」報表。
 
 以原始資料 (DPS原始 工作表、PP 樞紐快取) 為唯一數值來源，重建與人工整理版
 相同格式的輸出檔，放在 output/ 資料夾。
 
 用法::
 
-    python generate_buyer_reports.py                     # 自動抓 inout/ 下的檔案
+    python generate_buyer_reports.py                     # 自動抓 intput/ 下的檔案
     python generate_buyer_reports.py --compare           # 額外與人工整理版逐格對帳
     python generate_buyer_reports.py --dps A.xlsx --pp B.xlsx --out-dir /tmp/out
 
@@ -103,7 +103,7 @@ def autosize(ws, minimum: int = 8, maximum: int = 30) -> None:
 
 
 def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
-    """在 inout/ 底下依關鍵字找輸入檔；多個候選時取最新修改的那個。"""
+    """在 intput/ 底下依關鍵字找輸入檔；多個候選時取最新修改的那個。"""
     if not input_dir.is_dir():
         raise SystemExit(f"找不到輸入資料夾：{input_dir}")
     candidates = [
@@ -128,7 +128,8 @@ def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
 # ---------------------------------------------------------------------------
 
 DPS_SOURCE_SHEET = "DPS原始"
-DPS_TIDY_SHEET = "DPS整理后"
+DPS_TIDY_SHEET = "DPS整理後"
+DPS_COMPARE_SHEETS = (DPS_TIDY_SHEET, "DPS整理后")
 DPS_HEADER_KEYS = ("Line", "W/O", "AVTC P/N")
 
 
@@ -164,7 +165,7 @@ def header_date(cell) -> dt.date | None:
 
 
 def detect_dps_tail_cutoff(dps_path: Path, max_date: dt.date) -> dt.date | None:
-    """從活頁簿內既有的人工「DPS整理后」推斷末欄彙總桶的起始日。
+    """從活頁簿內既有的人工「DPS整理後」或舊版「DPS整理后」推斷末欄彙總桶的起始日。
 
     人工版是 Excel 樞紐日期群組的產物：最後一個日期欄其實是「> 前一日」的
     彙總桶。若該表不存在（未來只拿到原始檔）就回傳 None，代表所有日期都
@@ -173,12 +174,13 @@ def detect_dps_tail_cutoff(dps_path: Path, max_date: dt.date) -> dt.date | None:
     try:
         wb = load_workbook(dps_path, data_only=True)
     except Exception as exc:  # noqa: BLE001 - 只是推斷失敗，不該中斷主流程
-        warn(f"讀取既有整理后工作表失敗，改為不使用彙總桶：{exc}")
+        warn(f"讀取既有整理後工作表失敗，改為不使用彙總桶：{exc}")
         return None
     try:
-        if DPS_TIDY_SHEET not in wb.sheetnames:
+        sheet_name = next((name for name in DPS_COMPARE_SHEETS if name in wb.sheetnames), None)
+        if sheet_name is None:
             return None
-        ws = wb[DPS_TIDY_SHEET]
+        ws = wb[sheet_name]
         dates = [d for d in (header_date(cell) for cell in ws[1]) if d is not None]
         if not dates:
             return None
@@ -777,7 +779,8 @@ def generate_pp(
     }
 
 
-PP_TIDY_SHEET = "整理后PP"
+PP_TIDY_SHEET = "PP整理後"
+PP_COMPARE_SHEETS = (PP_TIDY_SHEET, "整理后PP")
 PP_SPACER_COLS = 3  # 人工版在 total 前留了三個空白欄，這裡照樣保留以維持版面一致
 
 
@@ -831,12 +834,20 @@ def write_pp_workbook(output_path: Path, labels: Sequence[str], rows: Sequence[l
 # ---------------------------------------------------------------------------
 
 
-def _load_grid(path: Path, sheet: str, key_col: int, first_data_col: int, label_row: int = 1):
+def _load_grid(
+    path: Path,
+    sheet: str | Sequence[str],
+    key_col: int,
+    first_data_col: int,
+    label_row: int = 1,
+):
     wb = load_workbook(path, data_only=True)
     try:
-        if sheet not in wb.sheetnames:
+        sheet_names = [sheet] if isinstance(sheet, str) else list(sheet)
+        sheet_name = next((name for name in sheet_names if name in wb.sheetnames), None)
+        if sheet_name is None:
             return None
-        ws = wb[sheet]
+        ws = wb[sheet_name]
         labels = {}
         for cell in ws[label_row]:
             if cell.column < first_data_col or cell.value is None:
@@ -864,9 +875,9 @@ def _load_grid(path: Path, sheet: str, key_col: int, first_data_col: int, label_
 def compare(
     title: str,
     manual_path: Path,
-    manual_sheet: str,
+    manual_sheet: str | Sequence[str],
     generated_path: Path,
-    generated_sheet: str,
+    generated_sheet: str | Sequence[str],
     key_col: int,
     first_data_col_manual: int,
     first_data_col_generated: int,
@@ -875,7 +886,8 @@ def compare(
     log(f"\n=== 對帳：{title} ===")
     manual = _load_grid(manual_path, manual_sheet, key_col, first_data_col_manual)
     if manual is None:
-        log(f"  來源檔內沒有 {manual_sheet} 工作表，略過對帳。")
+        manual_sheet_label = manual_sheet if isinstance(manual_sheet, str) else " / ".join(manual_sheet)
+        log(f"  來源檔內沒有 {manual_sheet_label} 工作表，略過對帳。")
         return
     generated = _load_grid(generated_path, generated_sheet, key_col, first_data_col_generated)
     if generated is None:
@@ -916,10 +928,10 @@ def compare(
 
 def build_parser(project_root: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="由 DPS / PP 原始資料生成整理后報表（數值一律以原始檔為準）。",
+        description="由 DPS / PP 原始資料生成整理後報表（數值一律以原始檔為準）。",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input-dir", type=Path, default=project_root / "inout",
+    parser.add_argument("--input-dir", type=Path, default=project_root / "intput",
                         help="輸入資料夾")
     parser.add_argument("--out-dir", type=Path, default=project_root / "output",
                         help="輸出資料夾（不存在會自動建立）")
@@ -987,7 +999,7 @@ def main() -> None:
         else:
             cutoff = parse_date_arg(args.dps_tail_cutoff)
 
-        dps_out = out_dir / "DPS整理后.xlsx"
+        dps_out = out_dir / f"{DPS_TIDY_SHEET}.xlsx"
         info = generate_dps(
             dps_path,
             dps_out,
@@ -1001,7 +1013,7 @@ def main() -> None:
             f"（{info['date_range'][0]} ~ {info['date_range'][1]}，D+N 兩班合併）")
         if info["tail_cutoff"]:
             log(f"  末欄彙總桶      ：{info['tail_cutoff']} 起之日期併入同一欄"
-                f"（沿用既有整理后版面）")
+                f"（沿用既有整理後版面）")
         else:
             log("  末欄彙總桶      ：未使用，每個日期各自成欄")
         log(f"  輸出            ：{info['rows']} 列 x {info['out_columns']} 個日期欄，"
@@ -1018,7 +1030,7 @@ def main() -> None:
 
         if args.compare:
             compare(
-                "DPS", dps_path, DPS_TIDY_SHEET, dps_out, DPS_TIDY_SHEET,
+                "DPS", dps_path, DPS_COMPARE_SHEETS, dps_out, DPS_TIDY_SHEET,
                 key_col=1, first_data_col_manual=2, first_data_col_generated=2,
             )
 
@@ -1028,7 +1040,7 @@ def main() -> None:
             raise SystemExit(f"找不到 PP 檔案：{pp_path}")
 
         start_week = None if args.pp_start_week.lower() == "auto" else int(args.pp_start_week)
-        pp_out = out_dir / "整理后PP.xlsx"
+        pp_out = out_dir / f"{PP_TIDY_SHEET}.xlsx"
         info = generate_pp(
             pp_path,
             pp_out,
@@ -1060,7 +1072,7 @@ def main() -> None:
 
         if args.compare:
             compare(
-                "PP", pp_path, PP_TIDY_SHEET, pp_out, PP_TIDY_SHEET,
+                "PP", pp_path, PP_COMPARE_SHEETS, pp_out, PP_TIDY_SHEET,
                 key_col=2, first_data_col_manual=4, first_data_col_generated=4,
             )
 

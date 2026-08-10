@@ -1,6 +1,6 @@
 # Buyer Reports 自動整理工具
 
-由 **DPS 原始** 與 **PP 原始** 資料自動生成「整理后」報表。
+由 **DPS 原始** 與 **PP 原始** 資料自動生成「整理後」報表。
 數值一律以原始檔為唯一來源，人工整理版只在 `--compare` 模式下用來對帳。
 
 ## 目錄結構
@@ -8,12 +8,12 @@
 ```
 buyer-reports/
 ├── generate_buyer_reports.py   # 主程式
-├── inout/                      # 輸入：把來源 Excel 放這裡
+├── intput/                     # 輸入：把來源 Excel 放這裡
 │   ├── TV DPS Jul 31-Ver 2.xlsx
 │   └── AVTC TV MNT VC PP 20260730 update (002).xlsx
 ├── output/                     # 輸出：執行時自動建立（已列入 .gitignore）
-│   ├── DPS整理后.xlsx
-│   └── 整理后PP.xlsx
+│   ├── DPS整理後.xlsx
+│   └── PP整理後.xlsx
 ├── requirements.txt
 └── README.md
 ```
@@ -23,7 +23,7 @@ buyer-reports/
 ```bash
 pip install -r requirements.txt
 
-# 最常用：自動抓 inout/ 下的檔案，產出到 output/
+# 最常用：自動抓 intput/ 下的檔案，產出到 output/
 python generate_buyer_reports.py
 
 # 產出後順便跟來源檔內既有的人工整理版逐格對帳
@@ -51,7 +51,7 @@ python generate_buyer_reports.py --compare
 「> 前一日」的彙總桶（本次檔案為 `9/4`，等於 9/4~9/26 全部相加）。
 `--dps-tail-cutoff` 控制此行為：
 
-- `auto`（預設）— 若來源檔內還有人工版 `DPS整理后`，就沿用它的末欄日期
+- `auto`（預設）— 若來源檔內還有人工版 `DPS整理後` 或舊版 `DPS整理后`，就沿用它的末欄日期
 - `none` — 每個日期各自成欄（未來只拿到原始檔時的預設結果）
 - `YYYY-MM-DD` — 指定彙總桶起始日
 
