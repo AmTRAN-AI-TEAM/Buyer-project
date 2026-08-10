@@ -21,6 +21,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
+from copy import copy
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -100,6 +101,53 @@ def autosize(ws, minimum: int = 8, maximum: int = 30) -> None:
             if cell.value is not None and not str(cell.value).startswith("="):
                 width = max(width, min(maximum, len(str(cell.value)) + 2))
         ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+
+def first_existing_sheet(wb, candidates: Sequence[str]) -> str | None:
+    return next((name for name in candidates if name in wb.sheetnames), None)
+
+
+def find_total_col(ws, header_row: int = 1) -> int | None:
+    for cell in ws[header_row]:
+        if cell.value is not None and str(cell.value).strip().lower() == "total":
+            return cell.column
+    return None
+
+
+def copy_cell_format(source, target) -> None:
+    if source.has_style:
+        target.font = copy(source.font)
+        target.fill = copy(source.fill)
+        target.border = copy(source.border)
+        target.alignment = copy(source.alignment)
+        target.protection = copy(source.protection)
+        target.number_format = source.number_format
+
+
+def copy_column_layout(source_ws, target_ws, source_col: int, target_col: int) -> None:
+    source_letter = get_column_letter(source_col)
+    target_letter = get_column_letter(target_col)
+    source_dim = source_ws.column_dimensions[source_letter]
+    target_dim = target_ws.column_dimensions[target_letter]
+    if source_dim.width is not None:
+        target_dim.width = source_dim.width
+    target_dim.hidden = source_dim.hidden
+    target_dim.outlineLevel = source_dim.outlineLevel
+    target_dim.collapsed = source_dim.collapsed
+
+
+def copy_row_layout(source_ws, target_ws, source_row: int, target_row: int) -> None:
+    source_dim = source_ws.row_dimensions[source_row]
+    target_dim = target_ws.row_dimensions[target_row]
+    if source_dim.height is not None:
+        target_dim.height = source_dim.height
+    target_dim.hidden = source_dim.hidden
+    target_dim.outlineLevel = source_dim.outlineLevel
+    target_dim.collapsed = source_dim.collapsed
+
+
+def set_filter_to_used_range(ws, last_col: int, last_row: int) -> None:
+    ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{last_row}"
 
 
 def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
@@ -315,7 +363,7 @@ def generate_dps(
                 values[bucket(date)] += qty
             rows.append((pn, label_is_numeric[pn], values))
 
-        write_dps_workbook(output_path, out_dates, rows)
+        write_dps_workbook(output_path, out_dates, rows, template_path=dps_path)
 
         grand_total = sum(sum(v.values()) for _pn, _n, v in rows)
         return {
@@ -339,6 +387,7 @@ def write_dps_workbook(
     output_path: Path,
     dates: Sequence[dt.date],
     rows: Sequence[tuple[str, bool, dict[dt.date, float]]],
+    template_path: Path | None = None,
 ) -> None:
     wb = Workbook()
     ws = wb.active
@@ -372,9 +421,58 @@ def write_dps_workbook(
     ws.freeze_panes = "B2"
     autosize(ws)
     ws.column_dimensions["A"].width = 24.83
+    last_row = len(rows) + 1
+    apply_dps_layout(ws, template_path, total_col, last_row)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
+
+
+def apply_dps_layout(
+    ws,
+    template_path: Path | None,
+    total_col: int,
+    last_row: int,
+) -> None:
+    set_filter_to_used_range(ws, total_col, last_row)
+    if template_path is None:
+        return
+
+    template_wb = None
+    try:
+        template_wb = load_workbook(template_path, data_only=False)
+        sheet_name = first_existing_sheet(template_wb, DPS_COMPARE_SHEETS)
+        if sheet_name is None:
+            return
+        template_ws = template_wb[sheet_name]
+        template_total_col = find_total_col(template_ws) or min(total_col, template_ws.max_column)
+        template_data_col = max(2, template_total_col - 1)
+
+        def source_col(target_col: int) -> int:
+            if target_col == total_col:
+                return template_total_col
+            if target_col <= template_data_col:
+                return min(target_col, template_ws.max_column)
+            return min(template_data_col, template_ws.max_column)
+
+        copy_row_layout(template_ws, ws, 1, 1)
+        for col in range(1, total_col + 1):
+            src_col = source_col(col)
+            copy_column_layout(template_ws, ws, src_col, col)
+            copy_cell_format(template_ws.cell(1, src_col), ws.cell(1, col))
+
+        if template_ws.max_row < 2:
+            return
+        for row_idx in range(2, last_row + 1):
+            copy_row_layout(template_ws, ws, 2, row_idx)
+            for col in range(1, total_col + 1):
+                src_col = source_col(col)
+                copy_cell_format(template_ws.cell(2, src_col), ws.cell(row_idx, col))
+    except Exception as exc:  # noqa: BLE001 - 樣式套用失敗不應阻斷數值報表產生
+        warn(f"DPS 樣式樣板套用失敗，已改用內建版面：{exc}")
+    finally:
+        if template_wb is not None:
+            template_wb.close()
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +855,7 @@ def generate_pp(
             + [clean_number(aggregate[pn][label]) for label in labels]
         )
 
-    write_pp_workbook(output_path, labels, rows)
+    write_pp_workbook(output_path, labels, rows, template_path=pp_path)
 
     return {
         "source": pp_path,
@@ -784,7 +882,12 @@ PP_COMPARE_SHEETS = (PP_TIDY_SHEET, "整理后PP")
 PP_SPACER_COLS = 3  # 人工版在 total 前留了三個空白欄，這裡照樣保留以維持版面一致
 
 
-def write_pp_workbook(output_path: Path, labels: Sequence[str], rows: Sequence[list]) -> None:
+def write_pp_workbook(
+    output_path: Path,
+    labels: Sequence[str],
+    rows: Sequence[list],
+    template_path: Path | None = None,
+) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = PP_TIDY_SHEET
@@ -824,9 +927,64 @@ def write_pp_workbook(output_path: Path, labels: Sequence[str], rows: Sequence[l
     ws.column_dimensions["C"].width = 20.7
     for offset in range(len(labels)):
         ws.column_dimensions[get_column_letter(4 + offset)].width = 13.0
+    last_row = len(rows) + 1
+    apply_pp_layout(ws, template_path, last_col, total_col, last_row)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
+
+
+def apply_pp_layout(
+    ws,
+    template_path: Path | None,
+    last_period_col: int,
+    total_col: int,
+    last_row: int,
+) -> None:
+    set_filter_to_used_range(ws, total_col, last_row)
+    if template_path is None:
+        return
+
+    template_wb = None
+    try:
+        template_wb = load_workbook(template_path, data_only=False)
+        sheet_name = first_existing_sheet(template_wb, PP_COMPARE_SHEETS)
+        if sheet_name is None:
+            return
+        template_ws = template_wb[sheet_name]
+        template_total_col = find_total_col(template_ws) or min(total_col, template_ws.max_column)
+        template_last_period_col = max(4, template_total_col - PP_SPACER_COLS - 1)
+
+        def source_col(target_col: int) -> int:
+            if target_col <= 3:
+                return min(target_col, template_ws.max_column)
+            if target_col == total_col:
+                return template_total_col
+            if last_period_col < target_col < total_col:
+                spacer_offset = target_col - last_period_col
+                return min(template_last_period_col + spacer_offset, template_ws.max_column)
+            if target_col <= template_last_period_col:
+                return min(target_col, template_ws.max_column)
+            return min(template_last_period_col, template_ws.max_column)
+
+        copy_row_layout(template_ws, ws, 1, 1)
+        for col in range(1, total_col + 1):
+            src_col = source_col(col)
+            copy_column_layout(template_ws, ws, src_col, col)
+            copy_cell_format(template_ws.cell(1, src_col), ws.cell(1, col))
+
+        if template_ws.max_row < 2:
+            return
+        for row_idx in range(2, last_row + 1):
+            copy_row_layout(template_ws, ws, 2, row_idx)
+            for col in range(1, total_col + 1):
+                src_col = source_col(col)
+                copy_cell_format(template_ws.cell(2, src_col), ws.cell(row_idx, col))
+    except Exception as exc:  # noqa: BLE001 - 樣式套用失敗不應阻斷數值報表產生
+        warn(f"PP 樣式樣板套用失敗，已改用內建版面：{exc}")
+    finally:
+        if template_wb is not None:
+            template_wb.close()
 
 
 # ---------------------------------------------------------------------------
