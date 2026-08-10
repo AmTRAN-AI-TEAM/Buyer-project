@@ -7,7 +7,26 @@ cd /d "%~dp0"
 echo Building BuyerReports.exe...
 echo.
 
-py -3 -m pip install -r requirements.txt pyinstaller
+set "PYTHON_CMD="
+py -3 --version >nul 2>nul
+if not errorlevel 1 set "PYTHON_CMD=py -3"
+if not defined PYTHON_CMD (
+    python --version >nul 2>nul
+    if not errorlevel 1 set "PYTHON_CMD=python"
+)
+
+if not defined PYTHON_CMD (
+    echo No Python runtime found.
+    echo Please install Python 3, or make sure python.exe is available in PATH.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo Using Python command: %PYTHON_CMD%
+echo.
+
+%PYTHON_CMD% -m pip install -r requirements.txt pyinstaller
 if errorlevel 1 (
     echo.
     echo Build failed while installing dependencies.
@@ -18,7 +37,7 @@ if errorlevel 1 (
 if exist build rmdir /s /q build
 if exist release\BuyerReports rmdir /s /q release\BuyerReports
 
-py -3 -m PyInstaller ^
+%PYTHON_CMD% -m PyInstaller ^
   --clean ^
   --onefile ^
   --console ^

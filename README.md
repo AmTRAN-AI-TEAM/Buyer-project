@@ -52,7 +52,8 @@ BuyerReports/
 完成後到 `output/` 取得 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
 exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用。
 
-若要打包 exe，請先在 Windows 安裝 Python 3，確認 `py -3` 可執行，然後執行：
+若要打包 exe，請先在 Windows 安裝 Python 3，確認 `py -3 --version` 或
+`python --version` 其中一個可執行，然後執行：
 
 ```bat
 build_exe.bat
