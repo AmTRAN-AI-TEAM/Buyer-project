@@ -19,6 +19,7 @@ import argparse
 import datetime as dt
 import re
 import sys
+import traceback
 import xml.etree.ElementTree as ET
 import zipfile
 from copy import copy
@@ -46,15 +47,55 @@ MONTH_INDEX = {name.lower(): i for i, name in enumerate(MONTH_ABBR, start=1)}
 # ---------------------------------------------------------------------------
 
 _LOG_QUIET = False
+_LOG_FILE = None
 
 
 def log(message: str = "") -> None:
     if not _LOG_QUIET:
-        print(message)
+        print(message, flush=True)
+    if _LOG_FILE is not None:
+        _LOG_FILE.write(message + "\n")
+        _LOG_FILE.flush()
 
 
 def warn(message: str) -> None:
-    print(f"[警告] {message}", file=sys.stderr)
+    print(f"[警告] {message}", file=sys.stderr, flush=True)
+    if _LOG_FILE is not None:
+        _LOG_FILE.write(f"[警告] {message}\n")
+        _LOG_FILE.flush()
+
+
+def is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def project_root() -> Path:
+    if is_frozen_app():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def setup_run_log(out_dir: Path) -> Path:
+    global _LOG_FILE
+    log_path = out_dir / "run.log"
+    _LOG_FILE = log_path.open("w", encoding="utf-8")
+    return log_path
+
+
+def close_run_log() -> None:
+    global _LOG_FILE
+    if _LOG_FILE is not None:
+        _LOG_FILE.close()
+        _LOG_FILE = None
+
+
+def pause_for_windows_exe(enabled: bool) -> None:
+    if not enabled:
+        return
+    try:
+        input("\n按 Enter 關閉視窗...")
+    except EOFError:
+        pass
 
 
 def numeric(value) -> float:
@@ -1116,23 +1157,19 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
     parser.add_argument("--compare", action="store_true",
                         help="與來源檔內既有的人工整理版逐格對帳並列出差異")
     parser.add_argument("--quiet", action="store_true", help="只輸出錯誤訊息")
+    parser.add_argument("--no-pause", action="store_true",
+                        help="Windows exe 模式下完成後不等待按 Enter")
     return parser
 
 
-def main() -> None:
-    global _LOG_QUIET
-
-    project_root = Path(__file__).resolve().parent
-    args = build_parser(project_root).parse_args()
-    _LOG_QUIET = args.quiet
-
-    out_dir: Path = args.out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+def run_reports(args) -> None:
+    args.input_dir.mkdir(parents=True, exist_ok=True)
 
     log("=" * 72)
     log("Buyer Reports 產生器")
     log(f"輸入資料夾：{args.input_dir}")
-    log(f"輸出資料夾：{out_dir}")
+    log(f"輸出資料夾：{args.out_dir}")
+    log(f"執行記錄  ：{args.out_dir / 'run.log'}")
     log("=" * 72)
 
     if not args.skip_dps:
@@ -1157,7 +1194,7 @@ def main() -> None:
         else:
             cutoff = parse_date_arg(args.dps_tail_cutoff)
 
-        dps_out = out_dir / f"{DPS_TIDY_SHEET}.xlsx"
+        dps_out = args.out_dir / f"{DPS_TIDY_SHEET}.xlsx"
         info = generate_dps(
             dps_path,
             dps_out,
@@ -1198,7 +1235,7 @@ def main() -> None:
             raise SystemExit(f"找不到 PP 檔案：{pp_path}")
 
         start_week = None if args.pp_start_week.lower() == "auto" else int(args.pp_start_week)
-        pp_out = out_dir / f"{PP_TIDY_SHEET}.xlsx"
+        pp_out = args.out_dir / f"{PP_TIDY_SHEET}.xlsx"
         info = generate_pp(
             pp_path,
             pp_out,
@@ -1237,5 +1274,40 @@ def main() -> None:
     log("\n完成。")
 
 
+def main() -> int:
+    global _LOG_QUIET
+
+    root = project_root()
+    args = build_parser(root).parse_args()
+    _LOG_QUIET = args.quiet
+    pause_after_run = is_frozen_app() and not args.no_pause
+
+    try:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        setup_run_log(args.out_dir)
+        run_reports(args)
+        return 0
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            warn(str(exc))
+        return exc.code if isinstance(exc.code, int) else 1
+    except KeyboardInterrupt:
+        warn("使用者中止執行。")
+        return 130
+    except Exception as exc:  # noqa: BLE001 - exe 模式需要把未知錯誤寫進 log
+        warn(f"執行失敗：{exc}")
+        detail = traceback.format_exc()
+        if _LOG_FILE is not None:
+            _LOG_FILE.write("\n--- traceback ---\n")
+            _LOG_FILE.write(detail)
+            _LOG_FILE.flush()
+        else:
+            print(detail, file=sys.stderr)
+        return 1
+    finally:
+        close_run_log()
+        pause_for_windows_exe(pause_after_run)
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

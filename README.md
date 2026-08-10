@@ -7,6 +7,7 @@
 
 ```
 buyer-reports/
+├── build_exe.bat               # Windows 打包腳本（產生 exe）
 ├── generate_buyer_reports.py   # 主程式
 ├── intput/                     # 輸入：把來源 Excel 放這裡
 │   ├── TV DPS Jul 31-Ver 2.xlsx
@@ -15,6 +16,7 @@ buyer-reports/
 │   ├── DPS整理後.xlsx
 │   └── PP整理後.xlsx
 ├── requirements.txt
+├── Windows執行檔(exe)使用說明.txt
 └── README.md
 ```
 
@@ -32,6 +34,32 @@ python generate_buyer_reports.py --compare
 
 輸入檔以檔名關鍵字自動辨識（含 `DPS` → DPS 檔，含 `PP` → PP 檔）；
 同類有多個檔案時取修改時間最新的那個，並會提示。也可用 `--dps` / `--pp` 明確指定。
+每次執行都會寫入 `output/run.log`，方便回查成功訊息或錯誤原因。
+
+## Windows 執行檔
+
+正式給 Windows 使用者時，建議交付整個資料夾，而不是只給單一 exe：
+
+```
+BuyerReports/
+├── BuyerReports.exe
+├── intput/
+├── output/
+└── Windows執行檔(exe)使用說明.txt
+```
+
+使用者只要把 DPS / PP Excel 放進 `intput/`，再雙擊 `BuyerReports.exe`，
+完成後到 `output/` 取得 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
+exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用。
+
+若要打包 exe，請先在 Windows 安裝 Python 3，確認 `py -3` 可執行，然後執行：
+
+```bat
+build_exe.bat
+```
+
+打包完成後產物會在 `release/BuyerReports/`。腳本會自動建立 `intput/`、
+`output/`，並複製 `Windows執行檔(exe)使用說明.txt`。
 
 ## 資料規律（本工具依據的規則）
 
@@ -93,6 +121,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | `--pp-report-date` | 報表基準日 `YYYY-MM-DD` |
 | `--compare` | 與來源檔內的人工整理版逐格對帳 |
 | `--quiet` | 只輸出錯誤訊息 |
+| `--no-pause` | Windows exe 模式下完成後不等待按 Enter |
 
 ## 對帳結果（2026-07 版來源檔）
 
