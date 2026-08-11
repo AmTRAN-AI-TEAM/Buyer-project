@@ -1,6 +1,25 @@
 Buyer Reports Windows 執行檔使用說明
 
-一、資料夾結構
+一、資料整理規則與前置條件
+
+DPS：
+1. 檔名需包含 DPS 字眼，且原始資料工作表名稱需為 DPS原始。
+2. 表頭列的欄位名稱必須一致，且需包含：Line、W/O、AVTC P/N。
+3. 日期欄必須是 Excel 日期格式；若日期是用公式累加產生也可以，但檔案需經 Excel 計算並儲存，讓程式讀得到日期值。
+4. 正常格式下，每個日期應該有兩欄，也就是 D / N 兩班。程式預設會把同一天的欄位加總。
+5. 料號欄必須使用 AVTC P/N 這欄。
+6. AVTC P/N 結尾帶 * 的料號預設會被排除。
+
+PP：
+1. 檔名需包含 PP 字眼，且檔案內必須有 pivot cache。
+2. pivot cache 內必須有這些欄位，且名稱需一致：Plan、Customer、Model、AVTC FG Part Number。
+3. Plan 欄位的值預設必須是 Production Input，程式才會納入計算。
+4. 週別與月份欄位需符合 Excel 樞紐表 / pivot cache 的格式。
+5. 跨月但同週的項目會合併加總，例如 WK36 和 WK36 Sep 會寫進同一個 WK36。
+6. 程式會抓 pivot cache 的更新日所在週再減一，作為輸出起始週。例如更新日是 2026-07-31，屬於第 31 週，所以程式會從 WK30 開始。
+7. 沒有週明細的月份會直接以月份欄位作為輸出。
+
+二、資料夾結構
 
 請保持整個 BuyerReports 資料夾放在一起，不要只單獨移動 exe。
 
@@ -12,7 +31,7 @@ BuyerReports/
 
 注意：輸入資料夾名稱是 intput，請不要改名。
 
-二、使用步驟
+三、使用步驟
 
 1. 把 DPS 與 PP 來源 Excel 檔放進 intput 資料夾。
    - DPS 檔名需包含 DPS
@@ -29,7 +48,7 @@ BuyerReports/
 5. 每次執行都會產生 output/run.log。
    如果執行失敗，請把 run.log 交給維護者確認原因。
 
-三、常見問題
+四、常見問題
 
 1. 找不到 DPS 或 PP 檔案
    請確認檔案已放在 intput 資料夾，且檔名包含 DPS 或 PP。
