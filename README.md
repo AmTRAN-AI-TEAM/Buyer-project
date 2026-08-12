@@ -30,7 +30,13 @@
 ```
 buyer-reports/
 ├── build_exe.bat               # Windows 打包腳本（產生 exe）
-├── generate_buyer_reports.py   # 主程式
+├── generate_buyer_reports.py   # 入口檔
+├── buyer_reports/              # 主程式模組
+│   ├── common.py               # 共用工具、log、Excel helper、Windows exe 判斷
+│   ├── dps.py                  # DPS 解析與輸出
+│   ├── pp.py                   # PP 樞紐快取解析、期間推導與輸出
+│   ├── compare.py              # 對帳工具
+│   └── runner.py               # CLI、找檔與執行流程
 ├── intput/                     # 輸入：把來源 Excel 放這裡
 │   ├── TV DPS Jul 31-Ver 2.xlsx
 │   └── AVTC TV MNT VC PP 20260730 update (002).xlsx

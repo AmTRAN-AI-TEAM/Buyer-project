@@ -1,0 +1,1 @@
+"""Buyer Reports generator package."""
