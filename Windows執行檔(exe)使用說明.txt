@@ -26,28 +26,35 @@ PP：
 
 BuyerReports/
   BuyerReports.exe
+  _internal/
   intput/
   output/
   Windows執行檔(exe)使用說明.txt
 
 注意：輸入資料夾名稱是 intput，請不要改名。
+注意：如果收到的是 zip 壓縮檔，請先完整解壓縮，不要在壓縮檔視窗內直接雙擊 BuyerReports.exe。
 
 三、使用步驟
 
-1. 把 DPS 與 PP 來源 Excel 檔放進 intput 資料夾。
+1. 如果收到的是 zip 壓縮檔，請先按右鍵選擇「全部解壓縮」。
+
+2. 進入解壓後的 BuyerReports 資料夾。
+
+3. 把 DPS 與 PP 來源 Excel 檔放進 intput 資料夾。
    - DPS 檔名需包含 DPS
    - PP 檔名需包含 PP
 
-2. 關閉已開啟的輸出檔，避免 Excel 鎖住檔案。
+4. 關閉已開啟的輸出檔，避免 Excel 鎖住檔案。
 
-3. 雙擊 BuyerReports.exe。
+5. 雙擊 BuyerReports.exe。
+   若 Windows 顯示 SmartScreen 警告，請確認檔案來源可信後，點「更多資訊」再點「仍要執行」。
    執行時會顯示階段式進度條。
 
-4. 執行完成後，到 output 資料夾取得：
+6. 執行完成後，到 output 資料夾取得：
    - DPS整理後.xlsx
    - PP整理後.xlsx
 
-5. 每次執行都會產生 output/run.log。
+7. 每次執行都會產生 output/run.log。
    如果某一種報表格式錯誤，工具會略過該報表並繼續嘗試另一種報表。
    若有報表未產出，請把 run.log 交給維護者確認原因。
 
@@ -56,20 +63,27 @@ BuyerReports/
 1. 找不到 DPS 或 PP 檔案
    請確認檔案已放在 intput 資料夾，且檔名包含 DPS 或 PP。
 
-2. 找不到符合規則的 DPS 或 PP 工作表
+2. Windows 顯示「無法訪問指定設備、路徑或文件」
+   請確認不是在 zip 壓縮檔視窗內直接執行。請先完整解壓縮，再到解壓後的 BuyerReports 資料夾內執行。
+
+3. Microsoft Defender SmartScreen 阻擋
+   請確認檔案來源可信後，點「更多資訊」再點「仍要執行」。
+   也可以對 BuyerReports.exe 按右鍵，進入「內容」，若看到「解除封鎖」請勾選後套用。
+
+4. 找不到符合規則的 DPS 或 PP 工作表
    DPS 請確認至少有一張工作表名稱包含 DPS，且內含 Line、W/O、AVTC P/N 與日期欄。
    PP 請確認至少有一張工作表名稱包含 PP，且該工作表內有樞紐分析表。
 
-3. 只有其中一份報表產出
+5. 只有其中一份報表產出
    代表另一份來源檔可能格式不符。請查看 output/run.log 裡的警告原因。
    若 output 內已有同名整理後檔案，可能是前次執行留下的舊檔，請以 run.log 的本次摘要為準。
 
-4. 無法寫入 output
+6. 無法寫入 output
    請確認輸出檔沒有被 Excel 開著，或整個資料夾沒有被設為唯讀。
 
-5. PP 數字看起來不是最新
+7. PP 數字看起來不是最新
    本工具讀取 PP 檔案內的樞紐快取。若提供者交檔前沒有 refresh 樞紐分析表，
    工具讀到的可能是舊快取。
 
-6. 只有原始資料、沒有人工整理後工作表
+8. 只有原始資料、沒有人工整理後工作表
    工具仍可產出報表；只是樣式會改用內建基本版面。

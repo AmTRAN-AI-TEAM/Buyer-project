@@ -39,10 +39,10 @@ if exist release\BuyerReports rmdir /s /q release\BuyerReports
 
 %PYTHON_CMD% -m PyInstaller ^
   --clean ^
-  --onefile ^
+  --onedir ^
   --console ^
   --name BuyerReports ^
-  --distpath release\BuyerReports ^
+  --distpath release ^
   --workpath build ^
   --specpath build ^
   generate_buyer_reports.py

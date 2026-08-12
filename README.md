@@ -66,6 +66,7 @@ python generate_buyer_reports.py --compare
 ```
 BuyerReports/
 ├── BuyerReports.exe
+├── _internal/
 ├── intput/
 ├── output/
 └── Windows執行檔(exe)使用說明.txt
@@ -73,7 +74,10 @@ BuyerReports/
 
 使用者只要把 DPS / PP Excel 放進 `intput/`，再雙擊 `BuyerReports.exe`，
 完成後到 `output/` 取得 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
-exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用。
+exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用；
+請務必先完整解壓縮，不要在 zip 壓縮檔視窗內直接執行。
+若 SmartScreen 顯示「Windows 已保護你的電腦」，請確認來源可信後點
+「更多資訊」→「仍要執行」。
 執行時 console 會顯示階段式進度條；若某一種報表因格式錯誤失敗，另一種報表仍會繼續嘗試產出。
 若失敗報表的同名輸出檔已存在，摘要會提醒該檔可能是前次執行留下的舊檔。
 
@@ -85,7 +89,8 @@ build_exe.bat
 ```
 
 打包完成後產物會在 `release/BuyerReports/`。腳本會自動建立 `intput/`、
-`output/`，並複製 `Windows執行檔(exe)使用說明.txt`。
+`output/`，並複製使用說明。若要提供 zip 給使用者，可自行壓縮要交付的
+release 資料夾；使用者仍需要先完整解壓縮後再執行。
 
 ## 資料規律（本工具依據的規則）
 

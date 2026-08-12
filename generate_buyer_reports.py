@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import posixpath
 import re
 import sys
+import tempfile
 import traceback
 import xml.etree.ElementTree as ET
 import zipfile
@@ -118,6 +120,54 @@ def project_root() -> Path:
     if is_frozen_app():
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+
+def path_is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def running_from_windows_temp() -> bool:
+    if not is_frozen_app() or not sys.platform.startswith("win"):
+        return False
+    exe_path = Path(sys.executable)
+    temp_paths = {
+        tempfile.gettempdir(),
+        os.environ.get("TEMP", ""),
+        os.environ.get("TMP", ""),
+    }
+    return any(
+        temp and path_is_under(exe_path, Path(temp))
+        for temp in temp_paths
+    )
+
+
+def show_windows_error(title: str, message: str) -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
+    except Exception:
+        pass
+
+
+def prevent_temp_execution() -> None:
+    if not running_from_windows_temp():
+        return
+    message = (
+        "BuyerReports.exe 目前看起來是從 Windows 暫存資料夾執行。\n\n"
+        "常見原因是直接在 release.zip 壓縮檔裡雙擊執行檔。\n"
+        "請先右鍵 release.zip 選擇「全部解壓縮」，再到解壓後的 "
+        "BuyerReports 資料夾內執行 BuyerReports.exe。\n\n"
+        "若仍被 Microsoft Defender SmartScreen 阻擋，請確認檔案來源可信後，"
+        "點「更多資訊」再點「仍要執行」。"
+    )
+    show_windows_error("Buyer Reports 需要先解壓縮", message)
+    raise SystemExit(message.replace("\n", " "))
 
 
 def setup_run_log(out_dir: Path) -> Path:
@@ -1613,6 +1663,7 @@ def main() -> int:
     pause_after_run = is_frozen_app() and not args.no_pause
 
     try:
+        prevent_temp_execution()
         args.out_dir.mkdir(parents=True, exist_ok=True)
         setup_run_log(args.out_dir)
         ok = run_reports(args)
