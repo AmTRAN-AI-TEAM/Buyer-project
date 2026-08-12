@@ -16,9 +16,11 @@ from .common import (
     clean_number,
     close_run_log,
     find_header_row,
-    first_sheet_containing,
+    first_sheet_matching_keywords,
     header_date,
     is_frozen_app,
+    keyword_label,
+    load_sheet_detection_config,
     log,
     parse_date_arg,
     pause_for_windows_exe,
@@ -33,7 +35,7 @@ from .compare import compare
 from .dps import (
     DPS_COMPARE_SHEETS,
     DPS_HEADER_KEYS,
-    DPS_SOURCE_SHEET_KEYWORD,
+    DPS_SOURCE_SHEET_KEYWORDS,
     DPS_TIDY_SHEET,
     detect_dps_tail_cutoff,
     generate_dps,
@@ -118,13 +120,17 @@ def candidate_paths(explicit_path: Path | None, input_dir: Path, patterns: Seque
     return find_input_candidates(input_dir, patterns, kind)
 
 
-def resolve_dps_tail_cutoff(dps_path: Path, tail_cutoff_arg: str) -> dt.date | None:
+def resolve_dps_tail_cutoff(
+    dps_path: Path,
+    tail_cutoff_arg: str,
+    sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
+) -> dt.date | None:
     if tail_cutoff_arg.lower() == "none":
         return None
     if tail_cutoff_arg.lower() == "auto":
         wb = load_workbook(dps_path, data_only=True)
         try:
-            ws = first_sheet_containing(wb, DPS_SOURCE_SHEET_KEYWORD)
+            ws = first_sheet_matching_keywords(wb, sheet_keywords)
             header_row = find_header_row(ws, DPS_HEADER_KEYS)
             dates = [d for d in (header_date(c) for c in ws[header_row]) if d]
             max_date = max(dates) if dates else None
@@ -151,7 +157,11 @@ def run_dps_report(args, progress: Progress | None = None) -> dict:
             if not dps_path.is_file():
                 raise SystemExit(f"找不到 DPS 檔案：{dps_path}")
 
-            cutoff = resolve_dps_tail_cutoff(dps_path, args.dps_tail_cutoff)
+            cutoff = resolve_dps_tail_cutoff(
+                dps_path,
+                args.dps_tail_cutoff,
+                sheet_keywords=args.dps_sheet_keywords,
+            )
             if progress is not None and not output_step_done:
                 progress.step("DPS: 產出報表")
                 output_step_done = True
@@ -160,6 +170,7 @@ def run_dps_report(args, progress: Progress | None = None) -> dict:
                 dps_out,
                 include_star_parts=args.include_star_parts,
                 tail_cutoff=cutoff,
+                sheet_keywords=args.dps_sheet_keywords,
             )
             log("\n--- DPS ---")
             log(f"  來源            ：{info['source'].name}")
@@ -234,6 +245,7 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
                 start_week=start_week,
                 base_year=args.pp_base_year,
                 report_date=args.pp_report_date,
+                sheet_keywords=args.pp_sheet_keywords,
             )
             log("\n--- PP ---")
             log(f"  來源            ：{info['source'].name}")
@@ -288,6 +300,10 @@ def run_reports(args) -> bool:
     log(f"輸入資料夾：{args.input_dir}")
     log(f"輸出資料夾：{args.out_dir}")
     log(f"執行記錄  ：{args.out_dir / 'run.log'}")
+    config_status = "已讀取" if args.sheet_config_loaded else "未找到，使用內建預設"
+    log(f"設定檔    ：{args.sheet_config_path}（{config_status}）")
+    log(f"DPS sheet 關鍵字：{keyword_label(args.dps_sheet_keywords)}")
+    log(f"PP sheet 關鍵字 ：{keyword_label(args.pp_sheet_keywords)}")
     log("=" * 72)
 
     tasks = []
@@ -331,6 +347,11 @@ def main() -> int:
         prevent_temp_execution()
         args.out_dir.mkdir(parents=True, exist_ok=True)
         setup_run_log(args.out_dir)
+        sheet_config = load_sheet_detection_config(root)
+        args.sheet_config_path = sheet_config["path"]
+        args.sheet_config_loaded = sheet_config["loaded"]
+        args.dps_sheet_keywords = sheet_config["dps_sheet_keywords"]
+        args.pp_sheet_keywords = sheet_config["pp_sheet_keywords"]
         ok = run_reports(args)
         return 0 if ok else 1
     except SystemExit as exc:

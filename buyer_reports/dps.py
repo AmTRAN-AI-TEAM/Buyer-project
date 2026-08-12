@@ -17,10 +17,11 @@ from .common import (
     copy_cell_format,
     copy_column_layout,
     copy_row_layout,
+    DEFAULT_DPS_SHEET_KEYWORDS,
     find_header_row,
     find_total_col,
     first_existing_sheet,
-    first_sheet_containing,
+    first_sheet_matching_keywords,
     header_date,
     set_filter_to_used_range,
     warn,
@@ -30,7 +31,7 @@ from .common import (
 # DPS
 # ---------------------------------------------------------------------------
 
-DPS_SOURCE_SHEET_KEYWORD = "DPS"
+DPS_SOURCE_SHEET_KEYWORDS = DEFAULT_DPS_SHEET_KEYWORDS
 DPS_TIDY_SHEET = "DPS整理後"
 DPS_COMPARE_SHEETS = (DPS_TIDY_SHEET, "DPS整理后")
 DPS_HEADER_KEYS = ("Line", "W/O", "AVTC P/N")
@@ -77,10 +78,11 @@ def generate_dps(
     output_path: Path,
     include_star_parts: bool = False,
     tail_cutoff: dt.date | None = None,
+    sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
 ) -> dict:
     wb = load_workbook(dps_path, data_only=True)
     try:
-        ws = first_sheet_containing(wb, DPS_SOURCE_SHEET_KEYWORD)
+        ws = first_sheet_matching_keywords(wb, sheet_keywords)
 
         header_row = find_header_row(ws, DPS_HEADER_KEYS)
         cols = {

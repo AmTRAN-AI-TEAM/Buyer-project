@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime as dt
 import os
 import re
@@ -20,6 +21,9 @@ except ImportError:  # pragma: no cover - 打包時 requirements 會安裝；這
     tqdm = None
 
 EXCEL_EPOCH = dt.date(1899, 12, 30)
+CONFIG_FILE_NAME = "buyer_reports.ini"
+DEFAULT_DPS_SHEET_KEYWORDS = ("DPS",)
+DEFAULT_PP_SHEET_KEYWORDS = ("PP", "Data")
 
 # ---------------------------------------------------------------------------
 # 共用小工具
@@ -95,6 +99,47 @@ def project_root() -> Path:
     if is_frozen_app():
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def parse_keyword_list(value: str) -> tuple[str, ...]:
+    keywords = [part.strip() for part in re.split(r"[,;\n]+", value) if part.strip()]
+    return tuple(dict.fromkeys(keywords))
+
+
+def load_sheet_detection_config(root: Path) -> dict:
+    config_path = root / CONFIG_FILE_NAME
+    result = {
+        "path": config_path,
+        "loaded": False,
+        "dps_sheet_keywords": DEFAULT_DPS_SHEET_KEYWORDS,
+        "pp_sheet_keywords": DEFAULT_PP_SHEET_KEYWORDS,
+    }
+    if not config_path.is_file():
+        return result
+
+    parser = configparser.ConfigParser()
+    parser.read(config_path, encoding="utf-8")
+    result["loaded"] = True
+    if parser.has_section("sheet_detection"):
+        dps_keywords = parse_keyword_list(
+            parser.get("sheet_detection", "dps_sheet_keywords", fallback="")
+        )
+        pp_keywords = parse_keyword_list(
+            parser.get("sheet_detection", "pp_sheet_keywords", fallback="")
+        )
+        if dps_keywords:
+            result["dps_sheet_keywords"] = dps_keywords
+        if pp_keywords:
+            result["pp_sheet_keywords"] = pp_keywords
+    return result
+
+
+def keyword_label(keywords: Sequence[str]) -> str:
+    return " 或 ".join(keywords)
+
+
+def sheet_name_matches_keywords(sheet_name: str, keywords: Sequence[str]) -> bool:
+    return any(re.search(re.escape(keyword), sheet_name, re.IGNORECASE) for keyword in keywords)
 
 
 def path_is_under(path: Path, parent: Path) -> bool:
@@ -227,6 +272,14 @@ def first_existing_sheet(wb, candidates: Sequence[str]) -> str | None:
     return next((name for name in candidates if name in wb.sheetnames), None)
 
 
+def first_sheet_matching_keywords(wb, keywords: Sequence[str]):
+    for ws in wb.worksheets:
+        if sheet_name_matches_keywords(ws.title, keywords):
+            return ws
+    names = "、".join(wb.sheetnames)
+    raise SystemExit(f"找不到名稱包含 {keyword_label(keywords)} 的工作表；目前工作表：{names}")
+
+
 def find_total_col(ws, header_row: int = 1) -> int | None:
     for cell in ws[header_row]:
         if cell.value is not None and str(cell.value).strip().lower() == "total":
@@ -270,11 +323,7 @@ def set_filter_to_used_range(ws, last_col: int, last_row: int) -> None:
     ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{last_row}"
 
 def first_sheet_containing(wb, keyword: str):
-    for ws in wb.worksheets:
-        if re.search(re.escape(keyword), ws.title, re.IGNORECASE):
-            return ws
-    names = "、".join(wb.sheetnames)
-    raise SystemExit(f"找不到名稱包含 {keyword!r} 的工作表；目前工作表：{names}")
+    return first_sheet_matching_keywords(wb, (keyword,))
 
 
 def find_header_row(ws, required: Iterable[str]) -> int:

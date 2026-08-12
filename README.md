@@ -17,7 +17,7 @@
 ### PP
 
 1. 檔名需包含 `PP` 字眼。
-2. 程式會依活頁簿順序抓第一張名稱包含 `PP` 且含樞紐分析表的工作表，作為欄位版面與客戶排序來源。
+2. 程式會依活頁簿順序抓第一張名稱包含 `PP` 或 `Data` 且含樞紐分析表的工作表，作為欄位版面與客戶排序來源。
 3. 該樞紐分析表對應的 pivot cache 內必須有這些欄位，且名稱需一致：`Plan`、`Customer`、`Model`、`AVTC FG Part Number`。
 4. `Plan` 欄位的值預設必須是 `Production Input`，程式才會納入計算。
 5. 週別與月份欄位需符合 Excel 樞紐表 / pivot cache 的格式。
@@ -31,6 +31,7 @@
 buyer-reports/
 ├── build_exe.bat               # Windows 打包腳本（產生 exe）
 ├── generate_buyer_reports.py   # 入口檔
+├── buyer_reports.ini           # sheet 命名關鍵字設定
 ├── buyer_reports/              # 主程式模組
 │   ├── common.py               # 共用工具、log、Excel helper、Windows exe 判斷
 │   ├── dps.py                  # DPS 解析與輸出
@@ -65,6 +66,27 @@ python generate_buyer_reports.py --compare
 也可用 `--dps` / `--pp` 明確指定。
 每次執行都會寫入 `output/run.log`，方便回查成功訊息或錯誤原因。
 
+## Sheet 命名設定
+
+程式啟動時會讀取專案根目錄或 exe 同層的 `buyer_reports.ini`。若檔案不存在，
+會使用內建預設值：DPS 抓名稱包含 `DPS` 的 sheet，PP 抓名稱包含 `PP` 或
+`Data` 且含樞紐分析表的 sheet。
+
+```ini
+[sheet_detection]
+dps_sheet_keywords = DPS
+pp_sheet_keywords = PP, Data
+```
+
+未來若 PP sheet 又有新命名，例如 `Pivot`，可直接改成：
+
+```ini
+[sheet_detection]
+pp_sheet_keywords = PP, Data, Pivot
+```
+
+Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需要重新 build。
+
 ## Windows 執行檔
 
 正式給 Windows 使用者時，建議交付整個資料夾，而不是只給單一 exe：
@@ -73,6 +95,7 @@ python generate_buyer_reports.py --compare
 BuyerReports/
 ├── BuyerReports.exe
 ├── _internal/
+├── buyer_reports.ini
 ├── intput/
 ├── output/
 └── Windows執行檔(exe)使用說明.txt
@@ -95,8 +118,8 @@ build_exe.bat
 ```
 
 打包完成後產物會在 `release/BuyerReports/`。腳本會自動建立 `intput/`、
-`output/`，並複製使用說明。若要提供 zip 給使用者，可自行壓縮要交付的
-release 資料夾；使用者仍需要先完整解壓縮後再執行。
+`output/`，並複製使用說明與 `buyer_reports.ini`。若要提供 zip 給使用者，
+可自行壓縮要交付的 release 資料夾；使用者仍需要先完整解壓縮後再執行。
 
 ## 資料規律（本工具依據的規則）
 
@@ -104,7 +127,7 @@ release 資料夾；使用者仍需要先完整解壓縮後再執行。
 
 | 項目 | 規則 |
 |---|---|
-| 來源工作表 | 依活頁簿順序取第一張名稱包含 `DPS` 的工作表 |
+| 來源工作表 | 依活頁簿順序取第一張名稱包含 `buyer_reports.ini` 內 DPS 關鍵字的工作表，預設為 `DPS` |
 | 表頭 | 自動尋找同時含 `Line` / `W/O` / `AVTC P/N` 的那一列（目前是第 9 列） |
 | 日期欄 | 表頭為日期型別的欄位。正常格式下，每個日期應該有兩欄，也就是 `D` / `N` 兩班。程式預設會把同一天的欄位加總 |
 | 列標籤 | 料號欄必須使用 `AVTC P/N`；`AVTC P/N` 結尾帶 `*` 的料號預設會被排除（與人工整理一致，可用 `--include-star-parts` 保留） |
@@ -124,8 +147,9 @@ release 資料夾；使用者仍需要先完整解壓縮後再執行。
 
 PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快取
 （`xl/pivotCache/`，來源指向外部活頁簿的 `Raw Data`）。本工具會先找第一張
-名稱包含 `PP` 且含樞紐分析表的工作表，拿該工作表判斷欄位版面與客戶順序，
-再直接解析該樞紐分析表對應的快取取得數字。
+名稱包含 `buyer_reports.ini` 內 PP 關鍵字且含樞紐分析表的工作表，預設關鍵字為
+`PP`、`Data`。程式會拿該工作表判斷欄位版面與客戶順序，再直接解析該樞紐分析表
+對應的快取取得數字。
 
 | 項目 | 規則 |
 |---|---|

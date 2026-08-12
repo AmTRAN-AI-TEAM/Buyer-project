@@ -56,6 +56,7 @@ if errorlevel 1 (
 if not exist release\BuyerReports\intput mkdir release\BuyerReports\intput
 if not exist release\BuyerReports\output mkdir release\BuyerReports\output
 copy /Y "Windows執行檔(exe)使用說明.txt" "release\BuyerReports\Windows執行檔(exe)使用說明.txt" >nul
+copy /Y "buyer_reports.ini" "release\BuyerReports\buyer_reports.ini" >nul
 
 echo.
 echo Done.

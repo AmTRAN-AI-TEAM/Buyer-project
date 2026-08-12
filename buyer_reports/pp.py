@@ -21,11 +21,14 @@ from .common import (
     copy_cell_format,
     copy_column_layout,
     copy_row_layout,
+    DEFAULT_PP_SHEET_KEYWORDS,
     find_total_col,
     first_existing_sheet,
+    keyword_label,
     numeric,
     serial_to_date,
     set_filter_to_used_range,
+    sheet_name_matches_keywords,
     warn,
 )
 
@@ -37,6 +40,7 @@ MONTH_ABBR = [
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ]
 MONTH_INDEX = {name.lower(): i for i, name in enumerate(MONTH_ABBR, start=1)}
+PP_SOURCE_SHEET_KEYWORDS = DEFAULT_PP_SHEET_KEYWORDS
 
 # ---------------------------------------------------------------------------
 # PP：樞紐快取解析
@@ -156,16 +160,20 @@ def _cache_field_names(xlsx: zipfile.ZipFile, definition_part: str) -> list[str]
     return [cf.attrib.get("name", "") for cf in cache_fields]
 
 
-def select_pp_pivot_source(pp_path: Path) -> dict[str, str]:
+def select_pp_pivot_source(
+    pp_path: Path,
+    sheet_keywords: Sequence[str] = PP_SOURCE_SHEET_KEYWORDS,
+) -> dict[str, str]:
+    keyword_text = keyword_label(sheet_keywords)
     with zipfile.ZipFile(pp_path) as xlsx:
         workbook_cache_defs = _workbook_pivot_cache_definitions(xlsx)
-        pp_sheet_names: list[str] = []
+        matched_sheet_names: list[str] = []
         skipped_no_pivot: list[str] = []
         for sheet in _workbook_sheets(xlsx):
             sheet_name = sheet["name"]
-            if not re.search(r"PP", sheet_name, re.IGNORECASE):
+            if not sheet_name_matches_keywords(sheet_name, sheet_keywords):
                 continue
-            pp_sheet_names.append(sheet_name)
+            matched_sheet_names.append(sheet_name)
             pivots = _sheet_pivot_tables(xlsx, sheet["part"], workbook_cache_defs)
             if not pivots:
                 skipped_no_pivot.append(sheet_name)
@@ -179,7 +187,7 @@ def select_pp_pivot_source(pp_path: Path) -> dict[str, str]:
                 if any(normalize_field(name) == "AVTC FG Part Number" for name in fields):
                     if skipped_no_pivot:
                         warn(
-                            "下列工作表名稱包含 PP，但沒有樞紐分析表，已略過："
+                            f"下列工作表名稱包含 {keyword_text}，但沒有樞紐分析表，已略過："
                             + ", ".join(skipped_no_pivot)
                         )
                     return {
@@ -194,12 +202,13 @@ def select_pp_pivot_source(pp_path: Path) -> dict[str, str]:
                 "但其樞紐快取找不到 'AVTC FG Part Number' 欄位。"
             )
 
-    if pp_sheet_names:
+    if matched_sheet_names:
         raise SystemExit(
-            f"{pp_path.name} 找到名稱包含 PP 的工作表（{', '.join(pp_sheet_names)}），"
+            f"{pp_path.name} 找到名稱包含 {keyword_text} 的工作表"
+            f"（{', '.join(matched_sheet_names)}），"
             "但沒有任何一張含樞紐分析表。"
         )
-    raise SystemExit(f"{pp_path.name} 找不到名稱包含 PP 且含樞紐分析表的工作表。")
+    raise SystemExit(f"{pp_path.name} 找不到名稱包含 {keyword_text} 且含樞紐分析表的工作表。")
 
 
 def _pivot_cache_parts(xlsx: zipfile.ZipFile) -> list[tuple[str, str]]:
@@ -513,8 +522,9 @@ def generate_pp(
     start_week: int | None = None,
     base_year: str | None = None,
     report_date: dt.date | None = None,
+    sheet_keywords: Sequence[str] = PP_SOURCE_SHEET_KEYWORDS,
 ) -> dict:
-    pivot_source = select_pp_pivot_source(pp_path)
+    pivot_source = select_pp_pivot_source(pp_path, sheet_keywords=sheet_keywords)
     cache = parse_pivot_cache(pp_path, definition_part=pivot_source["cache_definition"])
     fields = cache["fields"]
     records = cache["records"]
