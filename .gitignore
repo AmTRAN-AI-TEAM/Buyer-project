@@ -14,3 +14,6 @@ release/
 
 # Excel 暫存檔
 ~$*.xlsx
+
+# Local input Excel files
+intput/*.xlsx

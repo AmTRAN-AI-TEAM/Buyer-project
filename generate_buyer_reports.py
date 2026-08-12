@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """由 DPS / PP 原始資料自動生成「整理後」報表。
 
-以原始資料 (DPS原始 工作表、PP 樞紐快取) 為唯一數值來源，重建與人工整理版
+以原始資料 (DPS 來源工作表、PP 樞紐快取) 為唯一數值來源，重建與人工整理版
 相同格式的輸出檔，放在 output/ 資料夾。
 
 用法::
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import posixpath
 import re
 import sys
 import traceback
@@ -33,6 +34,7 @@ from openpyxl.utils import get_column_letter
 
 SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 EXCEL_EPOCH = dt.date(1899, 12, 30)
 
@@ -216,10 +218,18 @@ def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
 # DPS
 # ---------------------------------------------------------------------------
 
-DPS_SOURCE_SHEET = "DPS原始"
+DPS_SOURCE_SHEET_KEYWORD = "DPS"
 DPS_TIDY_SHEET = "DPS整理後"
 DPS_COMPARE_SHEETS = (DPS_TIDY_SHEET, "DPS整理后")
 DPS_HEADER_KEYS = ("Line", "W/O", "AVTC P/N")
+
+
+def first_sheet_containing(wb, keyword: str):
+    for ws in wb.worksheets:
+        if re.search(re.escape(keyword), ws.title, re.IGNORECASE):
+            return ws
+    names = "、".join(wb.sheetnames)
+    raise SystemExit(f"找不到名稱包含 {keyword!r} 的工作表；目前工作表：{names}")
 
 
 def find_header_row(ws, required: Iterable[str]) -> int:
@@ -297,9 +307,7 @@ def generate_dps(
 ) -> dict:
     wb = load_workbook(dps_path, data_only=True)
     try:
-        if DPS_SOURCE_SHEET not in wb.sheetnames:
-            raise SystemExit(f"{dps_path.name} 內找不到工作表：{DPS_SOURCE_SHEET}")
-        ws = wb[DPS_SOURCE_SHEET]
+        ws = first_sheet_containing(wb, DPS_SOURCE_SHEET_KEYWORD)
 
         header_row = find_header_row(ws, DPS_HEADER_KEYS)
         cols = {
@@ -315,7 +323,7 @@ def generate_dps(
             if date is not None:
                 date_columns.append((cell.column, date))
         if not date_columns:
-            raise SystemExit(f"{DPS_SOURCE_SHEET} 內找不到任何日期欄")
+            raise SystemExit(f"{ws.title} 內找不到任何日期欄")
 
         # 每個日期應該剛好有 D / N 兩班兩欄，不符就示警（資料格式可能變了）
         per_date = defaultdict(int)
@@ -409,6 +417,7 @@ def generate_dps(
         grand_total = sum(sum(v.values()) for _pn, _n, v in rows)
         return {
             "source": dps_path,
+            "source_sheet": ws.title,
             "header_row": header_row,
             "date_columns": len(date_columns),
             "dates": len(all_dates),
@@ -521,6 +530,165 @@ def apply_dps_layout(
 # ---------------------------------------------------------------------------
 
 
+def _rels_part_name(part_name: str) -> str:
+    folder, filename = posixpath.split(part_name)
+    return posixpath.join(folder, "_rels", f"{filename}.rels")
+
+
+def _resolve_part(source_part: str, target: str) -> str:
+    if target.startswith("/"):
+        return posixpath.normpath(target.lstrip("/"))
+    return posixpath.normpath(posixpath.join(posixpath.dirname(source_part), target))
+
+
+def _relationships(xlsx: zipfile.ZipFile, rels_name: str) -> list[dict[str, str]]:
+    if rels_name not in xlsx.namelist():
+        return []
+    rels = ET.fromstring(xlsx.read(rels_name))
+    return [dict(rel.attrib) for rel in rels]
+
+
+def _workbook_sheets(xlsx: zipfile.ZipFile) -> list[dict[str, str]]:
+    workbook_part = "xl/workbook.xml"
+    workbook = ET.fromstring(xlsx.read(workbook_part))
+    rels = {
+        rel["Id"]: rel["Target"]
+        for rel in _relationships(xlsx, _rels_part_name(workbook_part))
+        if "Id" in rel and "Target" in rel
+    }
+    sheets_root = workbook.find(f"{{{SPREADSHEET_NS}}}sheets")
+    sheets: list[dict[str, str]] = []
+    if sheets_root is None:
+        return sheets
+    for sheet in sheets_root:
+        rid = sheet.attrib.get(f"{{{OFFICE_REL_NS}}}id")
+        if not rid or rid not in rels:
+            continue
+        sheets.append({
+            "name": sheet.attrib.get("name", ""),
+            "part": _resolve_part(workbook_part, rels[rid]),
+        })
+    return sheets
+
+
+def _workbook_pivot_cache_definitions(xlsx: zipfile.ZipFile) -> dict[str, str]:
+    workbook_part = "xl/workbook.xml"
+    workbook = ET.fromstring(xlsx.read(workbook_part))
+    rels = {
+        rel["Id"]: rel["Target"]
+        for rel in _relationships(xlsx, _rels_part_name(workbook_part))
+        if "Id" in rel and "Target" in rel
+    }
+    pivot_caches = workbook.find(f"{{{SPREADSHEET_NS}}}pivotCaches")
+    cache_parts: dict[str, str] = {}
+    if pivot_caches is None:
+        return cache_parts
+    for pivot_cache in pivot_caches:
+        cache_id = pivot_cache.attrib.get("cacheId")
+        rid = pivot_cache.attrib.get(f"{{{OFFICE_REL_NS}}}id")
+        if cache_id and rid in rels:
+            cache_parts[cache_id] = _resolve_part(workbook_part, rels[rid])
+    return cache_parts
+
+
+def _pivot_table_cache_definition(
+    xlsx: zipfile.ZipFile,
+    pivot_table_part: str,
+    workbook_cache_defs: dict[str, str],
+) -> tuple[str | None, str | None]:
+    cache_id = None
+    if pivot_table_part in xlsx.namelist():
+        pivot_table = ET.fromstring(xlsx.read(pivot_table_part))
+        cache_id = pivot_table.attrib.get("cacheId")
+
+    for rel in _relationships(xlsx, _rels_part_name(pivot_table_part)):
+        target = rel.get("Target", "")
+        rel_type = rel.get("Type", "")
+        if "pivotCacheDefinition" in rel_type or "pivotCacheDefinition" in target:
+            return _resolve_part(pivot_table_part, target), cache_id
+
+    if cache_id is not None:
+        return workbook_cache_defs.get(cache_id), cache_id
+    return None, cache_id
+
+
+def _sheet_pivot_tables(
+    xlsx: zipfile.ZipFile,
+    sheet_part: str,
+    workbook_cache_defs: dict[str, str],
+) -> list[dict[str, str | None]]:
+    pivots: list[dict[str, str | None]] = []
+    for rel in _relationships(xlsx, _rels_part_name(sheet_part)):
+        target = rel.get("Target", "")
+        rel_type = rel.get("Type", "")
+        if "pivotTable" not in rel_type and "pivotTable" not in target:
+            continue
+        pivot_table_part = _resolve_part(sheet_part, target)
+        cache_definition, cache_id = _pivot_table_cache_definition(
+            xlsx, pivot_table_part, workbook_cache_defs
+        )
+        pivots.append({
+            "pivot_table": pivot_table_part,
+            "cache_definition": cache_definition,
+            "cache_id": cache_id,
+        })
+    return pivots
+
+
+def _cache_field_names(xlsx: zipfile.ZipFile, definition_part: str) -> list[str]:
+    definition = ET.fromstring(xlsx.read(definition_part))
+    cache_fields = definition.find(f"{{{SPREADSHEET_NS}}}cacheFields")
+    if cache_fields is None:
+        return []
+    return [cf.attrib.get("name", "") for cf in cache_fields]
+
+
+def select_pp_pivot_source(pp_path: Path) -> dict[str, str]:
+    with zipfile.ZipFile(pp_path) as xlsx:
+        workbook_cache_defs = _workbook_pivot_cache_definitions(xlsx)
+        pp_sheet_names: list[str] = []
+        skipped_no_pivot: list[str] = []
+        for sheet in _workbook_sheets(xlsx):
+            sheet_name = sheet["name"]
+            if not re.search(r"PP", sheet_name, re.IGNORECASE):
+                continue
+            pp_sheet_names.append(sheet_name)
+            pivots = _sheet_pivot_tables(xlsx, sheet["part"], workbook_cache_defs)
+            if not pivots:
+                skipped_no_pivot.append(sheet_name)
+                continue
+
+            for pivot in pivots:
+                cache_definition = pivot["cache_definition"]
+                if cache_definition is None:
+                    continue
+                fields = _cache_field_names(xlsx, cache_definition)
+                if any(normalize_field(name) == "AVTC FG Part Number" for name in fields):
+                    if skipped_no_pivot:
+                        warn(
+                            "下列工作表名稱包含 PP，但沒有樞紐分析表，已略過："
+                            + ", ".join(skipped_no_pivot)
+                        )
+                    return {
+                        "sheet_name": sheet_name,
+                        "sheet_part": sheet["part"],
+                        "pivot_table": pivot["pivot_table"] or "",
+                        "cache_definition": cache_definition,
+                        "cache_id": pivot["cache_id"] or "",
+                    }
+            raise SystemExit(
+                f"{pp_path.name} 的 {sheet_name} 工作表有樞紐分析表，"
+                "但其樞紐快取找不到 'AVTC FG Part Number' 欄位。"
+            )
+
+    if pp_sheet_names:
+        raise SystemExit(
+            f"{pp_path.name} 找到名稱包含 PP 的工作表（{', '.join(pp_sheet_names)}），"
+            "但沒有任何一張含樞紐分析表。"
+        )
+    raise SystemExit(f"{pp_path.name} 找不到名稱包含 PP 且含樞紐分析表的工作表。")
+
+
 def _pivot_cache_parts(xlsx: zipfile.ZipFile) -> list[tuple[str, str]]:
     """列出活頁簿內所有 pivotCacheDefinition 及其對應的 records 檔。
 
@@ -537,11 +705,10 @@ def _pivot_cache_parts(xlsx: zipfile.ZipFile) -> list[tuple[str, str]]:
             "pivotCache/", "pivotCache/_rels/"
         ) + ".rels"
         if rels_name in names:
-            rels = ET.fromstring(xlsx.read(rels_name))
-            for rel in rels:
-                target = rel.attrib.get("Target", "")
+            for rel in _relationships(xlsx, rels_name):
+                target = rel.get("Target", "")
                 if "pivotCacheRecords" in target:
-                    records = "xl/pivotCache/" + Path(target).name
+                    records = _resolve_part(definition, target)
                     break
         if records is None:
             guess = definition.replace("Definition", "Records")
@@ -551,20 +718,25 @@ def _pivot_cache_parts(xlsx: zipfile.ZipFile) -> list[tuple[str, str]]:
     return parts
 
 
-def parse_pivot_cache(pp_path: Path) -> dict:
+def parse_pivot_cache(pp_path: Path, definition_part: str | None = None) -> dict:
     with zipfile.ZipFile(pp_path) as xlsx:
         parts = _pivot_cache_parts(xlsx)
         if not parts:
             raise SystemExit(f"{pp_path.name} 內找不到樞紐快取（pivotCache），無法取得逐料號明細")
+        if definition_part is not None:
+            parts = [part for part in parts if part[0] == definition_part]
+            if not parts:
+                raise SystemExit(f"{pp_path.name} 找不到指定的樞紐快取：{definition_part}")
 
         chosen = None
         for definition_name, records_name in parts:
             definition = ET.fromstring(xlsx.read(definition_name))
-            fields = [
-                cf.attrib.get("name", "")
-                for cf in definition.find(f"{{{SPREADSHEET_NS}}}cacheFields")
-            ]
-            if any(f.strip() == "AVTC FG Part Number" for f in fields):
+            cache_fields = definition.find(f"{{{SPREADSHEET_NS}}}cacheFields")
+            if cache_fields is None:
+                fields = []
+            else:
+                fields = [cf.attrib.get("name", "") for cf in cache_fields]
+            if any(normalize_field(f) == "AVTC FG Part Number" for f in fields):
                 chosen = (definition_name, records_name, definition, fields)
                 break
         if chosen is None:
@@ -574,7 +746,10 @@ def parse_pivot_cache(pp_path: Path) -> dict:
         definition_name, records_name, definition, fields = chosen
 
         shared_by_field: list[list[str]] = []
-        for cache_field in definition.find(f"{{{SPREADSHEET_NS}}}cacheFields"):
+        cache_fields = definition.find(f"{{{SPREADSHEET_NS}}}cacheFields")
+        if cache_fields is None:
+            raise SystemExit("樞紐快取缺少 cacheFields，來源檔格式可能已變更")
+        for cache_field in cache_fields:
             shared_items: list[str] = []
             shared_root = cache_field.find(f"{{{SPREADSHEET_NS}}}sharedItems")
             if shared_root is not None:
@@ -656,7 +831,7 @@ def index_cache_periods(fields: Sequence[str]) -> tuple[dict, dict]:
     return dict(weeks), months
 
 
-def find_layout_row(wb) -> tuple[object, int, int] | None:
+def find_layout_row(wb, sheet_name: str | None = None) -> tuple[object, int, int] | None:
     """找出可見樞紐報表中，描述期間欄位版面的那一列。
 
     這一列（例：`WK27 Jul | WK28 | ... | Oct-26 | Nov26FCST | 2026 TOTAL | Jan'27 FCST`）
@@ -664,7 +839,8 @@ def find_layout_row(wb) -> tuple[object, int, int] | None:
     不必把 30~44 週、Nov/Dec、'27 這些寫死在程式裡。
     """
     best = None
-    for ws in wb.worksheets:
+    worksheets = [wb[sheet_name]] if sheet_name is not None else wb.worksheets
+    for ws in worksheets:
         for row in ws.iter_rows(min_row=1, max_row=40):
             hits = 0
             first_col = None
@@ -793,11 +969,11 @@ def build_pp_periods(
     return list(periods.items())
 
 
-def read_layout(pp_path: Path) -> tuple[list[str] | None, list[str]]:
+def read_layout(pp_path: Path, sheet_name: str | None = None) -> tuple[list[str] | None, list[str]]:
     """回傳 (期間欄位標籤序列, 客戶顯示順序)。"""
     wb = load_workbook(pp_path, data_only=True)
     try:
-        found = find_layout_row(wb)
+        found = find_layout_row(wb, sheet_name)
         if found is None:
             return None, []
         ws, row_idx, first_col = found
@@ -825,7 +1001,8 @@ def generate_pp(
     base_year: str | None = None,
     report_date: dt.date | None = None,
 ) -> dict:
-    cache = parse_pivot_cache(pp_path)
+    pivot_source = select_pp_pivot_source(pp_path)
+    cache = parse_pivot_cache(pp_path, definition_part=pivot_source["cache_definition"])
     fields = cache["fields"]
     records = cache["records"]
 
@@ -848,7 +1025,7 @@ def generate_pp(
         # 取報表日所在週的前一週開始（與人工整理慣例一致：保留上一週作參照）
         start_week = max(1, report_date.isocalendar()[1] - 1)
 
-    layout_labels, customer_order = read_layout(pp_path)
+    layout_labels, customer_order = read_layout(pp_path, sheet_name=pivot_source["sheet_name"])
     periods = build_pp_periods(fields, layout_labels, base_year, start_week)
     if not periods:
         raise SystemExit("推導不出任何輸出期間欄位")
@@ -900,6 +1077,9 @@ def generate_pp(
 
     return {
         "source": pp_path,
+        "layout_sheet": pivot_source["sheet_name"],
+        "pivot_table": pivot_source["pivot_table"],
+        "cache_id": pivot_source["cache_id"],
         "cache_part": cache["definition_part"],
         "cache_source_sheet": cache["source_sheet"],
         "refreshed_date": cache["refreshed_date"],
@@ -1182,12 +1362,11 @@ def run_reports(args) -> None:
         elif args.dps_tail_cutoff.lower() == "auto":
             wb = load_workbook(dps_path, data_only=True)
             try:
-                ws = wb[DPS_SOURCE_SHEET] if DPS_SOURCE_SHEET in wb.sheetnames else None
+                ws = first_sheet_containing(wb, DPS_SOURCE_SHEET_KEYWORD)
                 max_date = None
-                if ws is not None:
-                    header_row = find_header_row(ws, DPS_HEADER_KEYS)
-                    dates = [d for d in (header_date(c) for c in ws[header_row]) if d]
-                    max_date = max(dates) if dates else None
+                header_row = find_header_row(ws, DPS_HEADER_KEYS)
+                dates = [d for d in (header_date(c) for c in ws[header_row]) if d]
+                max_date = max(dates) if dates else None
             finally:
                 wb.close()
             cutoff = detect_dps_tail_cutoff(dps_path, max_date) if max_date else None
@@ -1203,6 +1382,7 @@ def run_reports(args) -> None:
         )
         log("\n--- DPS ---")
         log(f"  來源            ：{info['source'].name}")
+        log(f"  來源工作表      ：{info['source_sheet']}")
         log(f"  表頭列          ：第 {info['header_row']} 列")
         log(f"  日期欄          ：{info['date_columns']} 欄 / {info['dates']} 個日期"
             f"（{info['date_range'][0]} ~ {info['date_range'][1]}，D+N 兩班合併）")
@@ -1246,6 +1426,8 @@ def run_reports(args) -> None:
         )
         log("\n--- PP ---")
         log(f"  來源            ：{info['source'].name}")
+        log(f"  版面工作表      ：{info['layout_sheet']}")
+        log(f"  樞紐分析表      ：{info['pivot_table'] or '未知'}")
         log(f"  樞紐快取        ：{info['cache_part']}"
             f"（原始表 {info['cache_source_sheet'] or '未知'}，{info['records']} 筆）")
         log(f"  快取更新        ：{info['refreshed_date']} by {info['refreshed_by'] or '未知'}")
