@@ -32,6 +32,11 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - 打包時 requirements 會安裝；這裡保留退路
+    tqdm = None
+
 SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -50,21 +55,59 @@ MONTH_INDEX = {name.lower(): i for i, name in enumerate(MONTH_ABBR, start=1)}
 
 _LOG_QUIET = False
 _LOG_FILE = None
+_PROGRESS_BAR = None
 
 
 def log(message: str = "") -> None:
     if not _LOG_QUIET:
-        print(message, flush=True)
+        if _PROGRESS_BAR is not None:
+            _PROGRESS_BAR.write(message)
+        else:
+            print(message, flush=True)
     if _LOG_FILE is not None:
         _LOG_FILE.write(message + "\n")
         _LOG_FILE.flush()
 
 
 def warn(message: str) -> None:
-    print(f"[警告] {message}", file=sys.stderr, flush=True)
+    text = f"[警告] {message}"
+    if _PROGRESS_BAR is not None:
+        _PROGRESS_BAR.write(text, file=sys.stderr)
+    else:
+        print(text, file=sys.stderr, flush=True)
     if _LOG_FILE is not None:
-        _LOG_FILE.write(f"[警告] {message}\n")
+        _LOG_FILE.write(text + "\n")
         _LOG_FILE.flush()
+
+
+class Progress:
+    def __init__(self, total: int):
+        self.total = total
+        self.bar = None
+
+    def __enter__(self):
+        global _PROGRESS_BAR
+        if tqdm is not None and not _LOG_QUIET and self.total > 0 and sys.stdout.isatty():
+            self.bar = tqdm(
+                total=self.total,
+                desc="Buyer Reports",
+                unit="step",
+                dynamic_ncols=True,
+                leave=True,
+            )
+            _PROGRESS_BAR = self.bar
+        return self
+
+    def step(self, label: str) -> None:
+        if self.bar is not None:
+            self.bar.set_description_str(label)
+            self.bar.update(1)
+
+    def __exit__(self, exc_type, exc, tb):
+        global _PROGRESS_BAR
+        if self.bar is not None:
+            self.bar.close()
+        _PROGRESS_BAR = None
 
 
 def is_frozen_app() -> bool:
@@ -193,8 +236,8 @@ def set_filter_to_used_range(ws, last_col: int, last_row: int) -> None:
     ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{last_row}"
 
 
-def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
-    """在 intput/ 底下依關鍵字找輸入檔；多個候選時取最新修改的那個。"""
+def find_input_candidates(input_dir: Path, patterns: Sequence[str], kind: str) -> list[Path]:
+    """在 intput/ 底下依關鍵字找輸入檔；多個候選時依修改時間由新到舊回傳。"""
     if not input_dir.is_dir():
         raise SystemExit(f"找不到輸入資料夾：{input_dir}")
     candidates = [
@@ -210,8 +253,12 @@ def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
         )
     if len(candidates) > 1:
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        warn(f"{kind} 有多個候選檔，採用最新的：{candidates[0].name}")
-    return candidates[0]
+        warn(f"{kind} 有多個候選檔，將依修改時間由新到舊嘗試。")
+    return candidates
+
+
+def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
+    return find_input_candidates(input_dir, patterns, kind)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1342,7 +1389,181 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
     return parser
 
 
-def run_reports(args) -> None:
+def _error_message(exc: BaseException) -> str:
+    if isinstance(exc, SystemExit):
+        return str(exc) if str(exc) else str(exc.code)
+    return str(exc)
+
+
+def candidate_paths(explicit_path: Path | None, input_dir: Path, patterns: Sequence[str], kind: str) -> list[Path]:
+    if explicit_path is not None:
+        return [explicit_path]
+    return find_input_candidates(input_dir, patterns, kind)
+
+
+def resolve_dps_tail_cutoff(dps_path: Path, tail_cutoff_arg: str) -> dt.date | None:
+    if tail_cutoff_arg.lower() == "none":
+        return None
+    if tail_cutoff_arg.lower() == "auto":
+        wb = load_workbook(dps_path, data_only=True)
+        try:
+            ws = first_sheet_containing(wb, DPS_SOURCE_SHEET_KEYWORD)
+            header_row = find_header_row(ws, DPS_HEADER_KEYS)
+            dates = [d for d in (header_date(c) for c in ws[header_row]) if d]
+            max_date = max(dates) if dates else None
+        finally:
+            wb.close()
+        return detect_dps_tail_cutoff(dps_path, max_date) if max_date else None
+    return parse_date_arg(tail_cutoff_arg)
+
+
+def run_dps_report(args, progress: Progress | None = None) -> dict:
+    last_error = None
+    dps_out = args.out_dir / f"{DPS_TIDY_SHEET}.xlsx"
+    if progress is not None:
+        progress.step("DPS: 檢查來源")
+    output_step_done = False
+    try:
+        paths = candidate_paths(args.dps, args.input_dir, [r"DPS"], "DPS")
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - 找不到候選檔也只略過 DPS
+        last_error = exc
+        warn(f"DPS 無法產出，已略過。原因：{_error_message(exc)}")
+        paths = []
+    for dps_path in paths:
+        try:
+            if not dps_path.is_file():
+                raise SystemExit(f"找不到 DPS 檔案：{dps_path}")
+
+            cutoff = resolve_dps_tail_cutoff(dps_path, args.dps_tail_cutoff)
+            if progress is not None and not output_step_done:
+                progress.step("DPS: 產出報表")
+                output_step_done = True
+            info = generate_dps(
+                dps_path,
+                dps_out,
+                include_star_parts=args.include_star_parts,
+                tail_cutoff=cutoff,
+            )
+            log("\n--- DPS ---")
+            log(f"  來源            ：{info['source'].name}")
+            log(f"  來源工作表      ：{info['source_sheet']}")
+            log(f"  表頭列          ：第 {info['header_row']} 列")
+            log(f"  日期欄          ：{info['date_columns']} 欄 / {info['dates']} 個日期"
+                f"（{info['date_range'][0]} ~ {info['date_range'][1]}，D+N 兩班合併）")
+            if info["tail_cutoff"]:
+                log(f"  末欄彙總桶      ：{info['tail_cutoff']} 起之日期併入同一欄"
+                    f"（沿用既有整理後版面）")
+            else:
+                log("  末欄彙總桶      ：未使用，每個日期各自成欄")
+            log(f"  輸出            ：{info['rows']} 列 x {info['out_columns']} 個日期欄，"
+                f"合計 {info['grand_total']:,} pcs")
+            if info["excluded"]:
+                total = clean_number(sum(info["excluded"].values()))
+                log(f"  已排除 * 料號   ：{len(info['excluded'])} 個，合計 {total:,} pcs"
+                    f"（用 --include-star-parts 可保留）")
+                for pn, qty in sorted(info["excluded"].items()):
+                    log(f"      - {pn}  {clean_number(qty):,}")
+            if info["text_cells"]:
+                log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
+            log(f"  產出檔          ：{dps_out}")
+
+            if args.compare:
+                compare(
+                    "DPS", dps_path, DPS_COMPARE_SHEETS, dps_out, DPS_TIDY_SHEET,
+                    key_col=1, first_data_col_manual=2, first_data_col_generated=2,
+                )
+            return {"kind": "DPS", "ok": True, "source": dps_path, "output": dps_out}
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一報表失敗要能繼續下一份
+            last_error = exc
+            warn(f"DPS 來源檔 {dps_path.name} 無法產出，已略過。原因：{_error_message(exc)}")
+            if args.dps is not None:
+                break
+    if progress is not None and not output_step_done:
+        progress.step("DPS: 略過報表")
+    return {
+        "kind": "DPS",
+        "ok": False,
+        "error": _error_message(last_error) if last_error else "未知錯誤",
+        "output": dps_out,
+        "stale_output": dps_out.exists(),
+    }
+
+
+def run_pp_report(args, progress: Progress | None = None) -> dict:
+    last_error = None
+    pp_out = args.out_dir / f"{PP_TIDY_SHEET}.xlsx"
+    if progress is not None:
+        progress.step("PP: 檢查來源")
+    output_step_done = False
+    try:
+        paths = candidate_paths(args.pp, args.input_dir, [r"\bPP\b", r"PP"], "PP")
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - 找不到候選檔也只略過 PP
+        last_error = exc
+        warn(f"PP 無法產出，已略過。原因：{_error_message(exc)}")
+        paths = []
+    for pp_path in paths:
+        try:
+            if not pp_path.is_file():
+                raise SystemExit(f"找不到 PP 檔案：{pp_path}")
+
+            start_week = None if args.pp_start_week.lower() == "auto" else int(args.pp_start_week)
+            if progress is not None and not output_step_done:
+                progress.step("PP: 產出報表")
+                output_step_done = True
+            info = generate_pp(
+                pp_path,
+                pp_out,
+                plan=args.pp_plan,
+                start_week=start_week,
+                base_year=args.pp_base_year,
+                report_date=args.pp_report_date,
+            )
+            log("\n--- PP ---")
+            log(f"  來源            ：{info['source'].name}")
+            log(f"  版面工作表      ：{info['layout_sheet']}")
+            log(f"  樞紐分析表      ：{info['pivot_table'] or '未知'}")
+            log(f"  樞紐快取        ：{info['cache_part']}"
+                f"（原始表 {info['cache_source_sheet'] or '未知'}，{info['records']} 筆）")
+            log(f"  快取更新        ：{info['refreshed_date']} by {info['refreshed_by'] or '未知'}")
+            log(f"  報表基準日      ：{info['report_date']}"
+                f"（主年度 20{info['base_year']}，起始週 WK{info['start_week']:02d}）")
+            log(f"  欄位版面        ：{'取自可見樞紐報表' if info['layout_found'] else '推導模式'}")
+            log(f"  Plan 篩選       ：{info['plan']}（{info['plan_rows']} 筆料號）")
+            log(f"  期間欄          ：{len(info['periods'])} 欄 → {', '.join(info['periods'])}")
+            log(f"  輸出            ：{info['rows']} 列"
+                f"（已略過期間內全為 0 的 {info['dropped_zero']} 個料號），"
+                f"合計 {info['grand_total']:,} pcs")
+            log(f"  產出檔          ：{pp_out}")
+
+            if info["refreshed_date"] and info["refreshed_date"] < dt.date.today() - dt.timedelta(days=45):
+                warn(
+                    f"PP 樞紐快取最後更新於 {info['refreshed_date']}，距今已超過 45 天，"
+                    "數字可能是舊快照，請向提供者確認是否已 refresh。"
+                )
+
+            if args.compare:
+                compare(
+                    "PP", pp_path, PP_COMPARE_SHEETS, pp_out, PP_TIDY_SHEET,
+                    key_col=2, first_data_col_manual=4, first_data_col_generated=4,
+                )
+            return {"kind": "PP", "ok": True, "source": pp_path, "output": pp_out}
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一報表失敗要能繼續下一份
+            last_error = exc
+            warn(f"PP 來源檔 {pp_path.name} 無法產出，已略過。原因：{_error_message(exc)}")
+            if args.pp is not None:
+                break
+    if progress is not None and not output_step_done:
+        progress.step("PP: 略過報表")
+    return {
+        "kind": "PP",
+        "ok": False,
+        "error": _error_message(last_error) if last_error else "未知錯誤",
+        "output": pp_out,
+        "stale_output": pp_out.exists(),
+    }
+
+
+def run_reports(args) -> bool:
     args.input_dir.mkdir(parents=True, exist_ok=True)
 
     log("=" * 72)
@@ -1352,108 +1573,35 @@ def run_reports(args) -> None:
     log(f"執行記錄  ：{args.out_dir / 'run.log'}")
     log("=" * 72)
 
+    tasks = []
     if not args.skip_dps:
-        dps_path = args.dps or find_input(args.input_dir, [r"DPS"], "DPS")
-        if not dps_path.is_file():
-            raise SystemExit(f"找不到 DPS 檔案：{dps_path}")
-
-        if args.dps_tail_cutoff.lower() == "none":
-            cutoff = None
-        elif args.dps_tail_cutoff.lower() == "auto":
-            wb = load_workbook(dps_path, data_only=True)
-            try:
-                ws = first_sheet_containing(wb, DPS_SOURCE_SHEET_KEYWORD)
-                max_date = None
-                header_row = find_header_row(ws, DPS_HEADER_KEYS)
-                dates = [d for d in (header_date(c) for c in ws[header_row]) if d]
-                max_date = max(dates) if dates else None
-            finally:
-                wb.close()
-            cutoff = detect_dps_tail_cutoff(dps_path, max_date) if max_date else None
-        else:
-            cutoff = parse_date_arg(args.dps_tail_cutoff)
-
-        dps_out = args.out_dir / f"{DPS_TIDY_SHEET}.xlsx"
-        info = generate_dps(
-            dps_path,
-            dps_out,
-            include_star_parts=args.include_star_parts,
-            tail_cutoff=cutoff,
-        )
-        log("\n--- DPS ---")
-        log(f"  來源            ：{info['source'].name}")
-        log(f"  來源工作表      ：{info['source_sheet']}")
-        log(f"  表頭列          ：第 {info['header_row']} 列")
-        log(f"  日期欄          ：{info['date_columns']} 欄 / {info['dates']} 個日期"
-            f"（{info['date_range'][0]} ~ {info['date_range'][1]}，D+N 兩班合併）")
-        if info["tail_cutoff"]:
-            log(f"  末欄彙總桶      ：{info['tail_cutoff']} 起之日期併入同一欄"
-                f"（沿用既有整理後版面）")
-        else:
-            log("  末欄彙總桶      ：未使用，每個日期各自成欄")
-        log(f"  輸出            ：{info['rows']} 列 x {info['out_columns']} 個日期欄，"
-            f"合計 {info['grand_total']:,} pcs")
-        if info["excluded"]:
-            total = clean_number(sum(info["excluded"].values()))
-            log(f"  已排除 * 料號   ：{len(info['excluded'])} 個，合計 {total:,} pcs"
-                f"（用 --include-star-parts 可保留）")
-            for pn, qty in sorted(info["excluded"].items()):
-                log(f"      - {pn}  {clean_number(qty):,}")
-        if info["text_cells"]:
-            log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
-        log(f"  產出檔          ：{dps_out}")
-
-        if args.compare:
-            compare(
-                "DPS", dps_path, DPS_COMPARE_SHEETS, dps_out, DPS_TIDY_SHEET,
-                key_col=1, first_data_col_manual=2, first_data_col_generated=2,
-            )
-
+        tasks.append(("DPS", run_dps_report))
     if not args.skip_pp:
-        pp_path = args.pp or find_input(args.input_dir, [r"\bPP\b", r"PP"], "PP")
-        if not pp_path.is_file():
-            raise SystemExit(f"找不到 PP 檔案：{pp_path}")
+        tasks.append(("PP", run_pp_report))
 
-        start_week = None if args.pp_start_week.lower() == "auto" else int(args.pp_start_week)
-        pp_out = args.out_dir / f"{PP_TIDY_SHEET}.xlsx"
-        info = generate_pp(
-            pp_path,
-            pp_out,
-            plan=args.pp_plan,
-            start_week=start_week,
-            base_year=args.pp_base_year,
-            report_date=args.pp_report_date,
-        )
-        log("\n--- PP ---")
-        log(f"  來源            ：{info['source'].name}")
-        log(f"  版面工作表      ：{info['layout_sheet']}")
-        log(f"  樞紐分析表      ：{info['pivot_table'] or '未知'}")
-        log(f"  樞紐快取        ：{info['cache_part']}"
-            f"（原始表 {info['cache_source_sheet'] or '未知'}，{info['records']} 筆）")
-        log(f"  快取更新        ：{info['refreshed_date']} by {info['refreshed_by'] or '未知'}")
-        log(f"  報表基準日      ：{info['report_date']}"
-            f"（主年度 20{info['base_year']}，起始週 WK{info['start_week']:02d}）")
-        log(f"  欄位版面        ：{'取自可見樞紐報表' if info['layout_found'] else '推導模式'}")
-        log(f"  Plan 篩選       ：{info['plan']}（{info['plan_rows']} 筆料號）")
-        log(f"  期間欄          ：{len(info['periods'])} 欄 → {', '.join(info['periods'])}")
-        log(f"  輸出            ：{info['rows']} 列"
-            f"（已略過期間內全為 0 的 {info['dropped_zero']} 個料號），"
-            f"合計 {info['grand_total']:,} pcs")
-        log(f"  產出檔          ：{pp_out}")
+    results = []
+    with Progress(total=len(tasks) * 2) as progress:
+        for _name, runner in tasks:
+            results.append(runner(args, progress))
 
-        if info["refreshed_date"] and info["refreshed_date"] < dt.date.today() - dt.timedelta(days=45):
-            warn(
-                f"PP 樞紐快取最後更新於 {info['refreshed_date']}，距今已超過 45 天，"
-                "數字可能是舊快照，請向提供者確認是否已 refresh。"
-            )
+    log("\n--- 執行摘要 ---")
+    for result in results:
+        if result["ok"]:
+            log(f"  {result['kind']}：成功 → {result['output']}")
+        else:
+            log(f"  {result['kind']}：失敗 / 已略過 → {result['error']}")
+            if result.get("stale_output"):
+                log(f"      注意：{result['output']} 已存在，可能是前次執行留下的舊檔。")
 
-        if args.compare:
-            compare(
-                "PP", pp_path, PP_COMPARE_SHEETS, pp_out, PP_TIDY_SHEET,
-                key_col=2, first_data_col_manual=4, first_data_col_generated=4,
-            )
-
+    success = any(result["ok"] for result in results)
+    failed = [result for result in results if not result["ok"]]
+    if not results:
+        log("\n沒有啟用任何報表。")
+        return True
+    if failed:
+        log("[警告] 部分報表未產出，請查看上方警告或 output/run.log。")
     log("\n完成。")
+    return success and not failed
 
 
 def main() -> int:
@@ -1467,8 +1615,8 @@ def main() -> int:
     try:
         args.out_dir.mkdir(parents=True, exist_ok=True)
         setup_run_log(args.out_dir)
-        run_reports(args)
-        return 0
+        ok = run_reports(args)
+        return 0 if ok else 1
     except SystemExit as exc:
         if exc.code not in (0, None):
             warn(str(exc))
