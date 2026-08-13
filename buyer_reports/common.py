@@ -24,6 +24,8 @@ EXCEL_EPOCH = dt.date(1899, 12, 30)
 CONFIG_FILE_NAME = "buyer_reports.ini"
 DEFAULT_DPS_SHEET_KEYWORDS = ("DPS",)
 DEFAULT_PP_SHEET_KEYWORDS = ("PP", "Data")
+DEFAULT_DPS_PART_NUMBER_HEADERS = ("AVTC P/N", "P/N", "Model")
+DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS = ("Part Number",)
 
 # ---------------------------------------------------------------------------
 # 共用小工具
@@ -113,6 +115,8 @@ def load_sheet_detection_config(root: Path) -> dict:
         "loaded": False,
         "dps_sheet_keywords": DEFAULT_DPS_SHEET_KEYWORDS,
         "pp_sheet_keywords": DEFAULT_PP_SHEET_KEYWORDS,
+        "dps_part_number_headers": DEFAULT_DPS_PART_NUMBER_HEADERS,
+        "pp_part_number_field_keywords": DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
     }
     if not config_path.is_file():
         return result
@@ -131,11 +135,27 @@ def load_sheet_detection_config(root: Path) -> dict:
             result["dps_sheet_keywords"] = dps_keywords
         if pp_keywords:
             result["pp_sheet_keywords"] = pp_keywords
+    if parser.has_section("dps"):
+        part_headers = parse_keyword_list(
+            parser.get("dps", "part_number_headers", fallback="")
+        )
+        if part_headers:
+            result["dps_part_number_headers"] = part_headers
+    if parser.has_section("pp"):
+        part_keywords = parse_keyword_list(
+            parser.get("pp", "part_number_field_keywords", fallback="")
+        )
+        if part_keywords:
+            result["pp_part_number_field_keywords"] = part_keywords
     return result
 
 
 def keyword_label(keywords: Sequence[str]) -> str:
     return " 或 ".join(keywords)
+
+
+def normalize_label(value) -> str:
+    return re.sub(r"\s+", " ", str(value).strip()).casefold()
 
 
 def sheet_name_matches_keywords(sheet_name: str, keywords: Sequence[str]) -> bool:

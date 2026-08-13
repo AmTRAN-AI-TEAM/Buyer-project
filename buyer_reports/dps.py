@@ -18,11 +18,13 @@ from .common import (
     copy_column_layout,
     copy_row_layout,
     DEFAULT_DPS_SHEET_KEYWORDS,
-    find_header_row,
+    DEFAULT_DPS_PART_NUMBER_HEADERS,
     find_total_col,
     first_existing_sheet,
     first_sheet_matching_keywords,
     header_date,
+    keyword_label,
+    normalize_label,
     set_filter_to_used_range,
     warn,
 )
@@ -32,9 +34,11 @@ from .common import (
 # ---------------------------------------------------------------------------
 
 DPS_SOURCE_SHEET_KEYWORDS = DEFAULT_DPS_SHEET_KEYWORDS
+DPS_PART_NUMBER_HEADERS = DEFAULT_DPS_PART_NUMBER_HEADERS
 DPS_TIDY_SHEET = "DPS整理後"
 DPS_COMPARE_SHEETS = (DPS_TIDY_SHEET, "DPS整理后")
-DPS_HEADER_KEYS = ("Line", "W/O", "AVTC P/N")
+DPS_BASE_HEADER_KEYS = ("Line", "W/O")
+DPS_HEADER_KEYS = (*DPS_BASE_HEADER_KEYS, "AVTC P/N")
 
 
 
@@ -73,25 +77,41 @@ def excel_label_sort_key(label: str, is_numeric: bool):
     return (1, 0.0, label)
 
 
+def find_dps_header(ws, part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS) -> tuple[int, int, str]:
+    required = {normalize_label(name) for name in DPS_BASE_HEADER_KEYS}
+    part_aliases = [(normalize_label(name), name) for name in part_number_headers]
+
+    for row in ws.iter_rows():
+        headers = {
+            normalize_label(cell.value): cell.column
+            for cell in row
+            if cell.value is not None and str(cell.value).strip()
+        }
+        if not required.issubset(headers):
+            continue
+        for normalized, label in part_aliases:
+            if normalized in headers:
+                return row[0].row, headers[normalized], label
+
+    raise SystemExit(
+        f"在 {ws.title} 找不到含有 Line、W/O，且料號欄名稱包含 "
+        f"{keyword_label(part_number_headers)} 的表頭列。"
+    )
+
+
 def generate_dps(
     dps_path: Path,
     output_path: Path,
     include_star_parts: bool = False,
     tail_cutoff: dt.date | None = None,
     sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
+    part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
 ) -> dict:
     wb = load_workbook(dps_path, data_only=True)
     try:
         ws = first_sheet_matching_keywords(wb, sheet_keywords)
 
-        header_row = find_header_row(ws, DPS_HEADER_KEYS)
-        cols = {
-            str(cell.value).strip(): cell.column
-            for cell in ws[header_row]
-            if cell.value is not None
-        }
-        pn_col = cols["AVTC P/N"]
-
+        header_row, pn_col, pn_header = find_dps_header(ws, part_number_headers)
         date_columns: list[tuple[int, dt.date]] = []
         for cell in ws[header_row]:
             date = header_date(cell)
@@ -194,6 +214,7 @@ def generate_dps(
             "source": dps_path,
             "source_sheet": ws.title,
             "header_row": header_row,
+            "part_number_header": pn_header,
             "date_columns": len(date_columns),
             "dates": len(all_dates),
             "date_range": (all_dates[0], all_dates[-1]),

@@ -8,17 +8,17 @@
 ### DPS
 
 1. 檔名需包含 `DPS` 字眼；程式會依活頁簿順序抓第一張名稱包含 `DPS` 的工作表作為來源。
-2. 表頭列的欄位名稱必須一致，且需包含：`Line`、`W/O`、`AVTC P/N`。
+2. 表頭列需包含：`Line`、`W/O`，以及 `buyer_reports.ini` 內設定的其中一個 DPS 料號欄別名。
 3. 日期欄必須是 Excel 日期格式；若日期是用公式累加產生也可以，但檔案需經 Excel 計算並儲存，讓程式讀得到日期值。
 4. 正常格式下，每個日期應該有兩欄，也就是 `D` / `N` 兩班。程式預設會把同一天的欄位加總。
-5. 料號欄必須使用 `AVTC P/N` 這欄。
-6. `AVTC P/N` 結尾帶 `*` 的料號預設會被排除。
+5. 料號欄預設可使用 `AVTC P/N`、`P/N` 或 `Model`。
+6. 料號結尾帶 `*` 的資料預設會被排除。
 
 ### PP
 
 1. 檔名需包含 `PP` 字眼。
 2. 程式會依活頁簿順序抓第一張名稱包含 `PP` 或 `Data` 且含樞紐分析表的工作表，作為欄位版面與客戶排序來源。
-3. 該樞紐分析表對應的 pivot cache 內必須有這些欄位，且名稱需一致：`Plan`、`Customer`、`Model`、`AVTC FG Part Number`。
+3. 該樞紐分析表對應的 pivot cache 內必須有 `Plan`、`Customer`、`Model`，並有名稱包含 `Part Number` 的料號欄位。
 4. `Plan` 欄位的值預設必須是 `Production Input`，程式才會納入計算。
 5. 週別與月份欄位需符合 Excel 樞紐表 / pivot cache 的格式。
 6. 跨月但同週的項目會合併加總，例如 `WK36` 和 `WK36 Sep` 會寫進同一個 `WK36`。
@@ -31,7 +31,7 @@
 buyer-reports/
 ├── build_exe.bat               # Windows 打包腳本（產生 exe）
 ├── generate_buyer_reports.py   # 入口檔
-├── buyer_reports.ini           # sheet 命名關鍵字設定
+├── buyer_reports.ini           # sheet / 欄位偵測關鍵字設定
 ├── buyer_reports/              # 主程式模組
 │   ├── common.py               # 共用工具、log、Excel helper、Windows exe 判斷
 │   ├── dps.py                  # DPS 解析與輸出
@@ -66,23 +66,34 @@ python generate_buyer_reports.py --compare
 也可用 `--dps` / `--pp` 明確指定。
 每次執行都會寫入 `output/run.log`，方便回查成功訊息或錯誤原因。
 
-## Sheet 命名設定
+## 偵測關鍵字設定
 
 程式啟動時會讀取專案根目錄或 exe 同層的 `buyer_reports.ini`。若檔案不存在，
 會使用內建預設值：DPS 抓名稱包含 `DPS` 的 sheet，PP 抓名稱包含 `PP` 或
-`Data` 且含樞紐分析表的 sheet。
+`Data` 且含樞紐分析表的 sheet。DPS 料號欄可接受 `AVTC P/N`、`P/N`、`Model`，
+PP 樞紐快取的料號欄會抓名稱包含 `Part Number` 的欄位；若有多個符合欄位，
+會優先選擇包含 `FG` 的欄位。
 
 ```ini
 [sheet_detection]
 dps_sheet_keywords = DPS
 pp_sheet_keywords = PP, Data
+
+[dps]
+part_number_headers = AVTC P/N, P/N, Model
+
+[pp]
+part_number_field_keywords = Part Number
 ```
 
-未來若 PP sheet 又有新命名，例如 `Pivot`，可直接改成：
+未來若 PP sheet 又有新命名，例如 `Pivot`，或 DPS 料號欄又有新表頭，可直接改成：
 
 ```ini
 [sheet_detection]
 pp_sheet_keywords = PP, Data, Pivot
+
+[dps]
+part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 ```
 
 Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需要重新 build。
@@ -128,9 +139,9 @@ build_exe.bat
 | 項目 | 規則 |
 |---|---|
 | 來源工作表 | 依活頁簿順序取第一張名稱包含 `buyer_reports.ini` 內 DPS 關鍵字的工作表，預設為 `DPS` |
-| 表頭 | 自動尋找同時含 `Line` / `W/O` / `AVTC P/N` 的那一列（目前是第 9 列） |
+| 表頭 | 自動尋找同時含 `Line` / `W/O`，且含有 `buyer_reports.ini` 內 DPS 料號欄別名的那一列 |
 | 日期欄 | 表頭為日期型別的欄位。正常格式下，每個日期應該有兩欄，也就是 `D` / `N` 兩班。程式預設會把同一天的欄位加總 |
-| 列標籤 | 料號欄必須使用 `AVTC P/N`；`AVTC P/N` 結尾帶 `*` 的料號預設會被排除（與人工整理一致，可用 `--include-star-parts` 保留） |
+| 列標籤 | 使用選定的 DPS 料號欄；料號結尾帶 `*` 者預設會被排除（與人工整理一致，可用 `--include-star-parts` 保留） |
 | 排序 | 模擬 Excel 樞紐：數字型標籤在前（依數值），文字型在後 |
 | 空值 | 數量為 0 時留白，不填 0（與人工版一致） |
 | total | 寫成 `=SUM(...)` 公式 |
@@ -154,7 +165,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | 項目 | 規則 |
 |---|---|
 | 篩選 | `Plan` 欄位的值預設必須是 `Production Input`，程式才會納入計算（可用 `--pp-plan` 改） |
-| 列 | `AVTC FG Part Number`，期間內合計為 0 者不輸出 |
+| 列 | 使用名稱符合 `buyer_reports.ini` 內 PP 料號欄關鍵字的欄位，預設抓 `Part Number`；期間內合計為 0 者不輸出 |
 | 欄 | 由選定 PP 工作表上的樞紐報表欄位版面自動推導 |
 | 重複週次 | 跨月重複的週（如 `WK36` 同時在 Aug/Sep）**相加為單一欄** |
 | 月小計欄 | 已有週明細的月份，其月欄是小計，不重複輸出 |
@@ -165,6 +176,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 （`WK27 Jul | WK28 | … | Oct-26 | Nov26FCST | 2026 TOTAL | Jan'27 FCST | …`），
 從起始週開始往右取，跳過小計欄。因此「週明細到哪個月為止、之後改用月預測」
 會跟著來源檔自動調整，不需改程式。
+樞紐快取週欄目前支援 `WK31 26'Aug` 與 `WK31 Jul '26` 兩種格式。
 
 起始週預設為**報表基準日所在週的前一週**（保留上一週作參照）；
 報表基準日預設取樞紐快取的更新日期。可用 `--pp-start-week` / `--pp-report-date` 覆寫。
@@ -229,7 +241,7 @@ DPS 完全一致。PP 的 3 處差異均為人工整理疏漏，本工具產出�
 
 輸出刻意貼近人工版：DPS 為 72 欄 x（143+1）列、`total` 以 `=SUM()` 公式呈現；
 PP 的 `total` 同樣保留在第 31 欄（AE），前面留 3 個空白欄，與人工版一致。
-差別只有一處：PP 的 A/B/C 欄補上了 `Customer` / `AVTC FG Part Number` / `Model`
+差別只有一處：PP 的 A/B/C 欄補上了 `Customer` / 選定料號欄 / `Model`
 標題（人工版該三格是空的）。
 
 產出檔會自動在標題列套用篩選下拉（AutoFilter）。若來源檔內已有人工整理版

@@ -4,16 +4,16 @@ Buyer Reports Windows 執行檔使用說明
 
 DPS：
 1. 檔名需包含 DPS 字眼；程式會依活頁簿順序抓第一張名稱包含 DPS 的工作表作為來源。
-2. 表頭列的欄位名稱必須一致，且需包含：Line、W/O、AVTC P/N。
+2. 表頭列需包含：Line、W/O，以及 buyer_reports.ini 內設定的其中一個 DPS 料號欄別名。
 3. 日期欄必須是 Excel 日期格式；若日期是用公式累加產生也可以，但檔案需經 Excel 計算並儲存，讓程式讀得到日期值。
 4. 正常格式下，每個日期應該有兩欄，也就是 D / N 兩班。程式預設會把同一天的欄位加總。
-5. 料號欄必須使用 AVTC P/N 這欄。
-6. AVTC P/N 結尾帶 * 的料號預設會被排除。
+5. 料號欄預設可使用 AVTC P/N、P/N 或 Model。
+6. 料號結尾帶 * 的資料預設會被排除。
 
 PP：
 1. 檔名需包含 PP 字眼。
 2. 程式會依活頁簿順序抓第一張名稱包含 PP 或 Data 且含樞紐分析表的工作表，作為欄位版面與客戶排序來源。
-3. 該樞紐分析表對應的 pivot cache 內必須有這些欄位，且名稱需一致：Plan、Customer、Model、AVTC FG Part Number。
+3. 該樞紐分析表對應的 pivot cache 內必須有 Plan、Customer、Model，並有名稱包含 Part Number 的料號欄位。
 4. Plan 欄位的值預設必須是 Production Input，程式才會納入計算。
 5. 週別與月份欄位需符合 Excel 樞紐表 / pivot cache 的格式。
 6. 跨月但同週的項目會合併加總，例如 WK36 和 WK36 Sep 會寫進同一個 WK36。
@@ -33,7 +33,7 @@ BuyerReports/
   Windows執行檔(exe)使用說明.txt
 
 注意：輸入資料夾名稱是 intput，請不要改名。
-注意：buyer_reports.ini 是 sheet 命名關鍵字設定，請和 BuyerReports.exe 放在同一層。
+注意：buyer_reports.ini 是 sheet / 欄位偵測關鍵字設定，請和 BuyerReports.exe 放在同一層。
 注意：如果收到的是 zip 壓縮檔，請先完整解壓縮，不要在壓縮檔視窗內直接雙擊 BuyerReports.exe。
 
 三、使用步驟
@@ -60,7 +60,7 @@ BuyerReports/
    如果某一種報表格式錯誤，工具會略過該報表並繼續嘗試另一種報表。
    若有報表未產出，請把 run.log 交給維護者確認原因。
 
-四、sheet 命名設定
+四、偵測關鍵字設定
 
 BuyerReports.exe 會讀取同層的 buyer_reports.ini。
 預設內容如下：
@@ -69,10 +69,21 @@ BuyerReports.exe 會讀取同層的 buyer_reports.ini。
 dps_sheet_keywords = DPS
 pp_sheet_keywords = PP, Data
 
+[dps]
+part_number_headers = AVTC P/N, P/N, Model
+
+[pp]
+part_number_field_keywords = Part Number
+
 若未來 PP 的樞紐分析表 sheet 改成其他命名，例如 Pivot，可改成：
 
 [sheet_detection]
 pp_sheet_keywords = PP, Data, Pivot
+
+若未來 DPS 料號欄有新表頭，例如 Buyer P/N，可改成：
+
+[dps]
+part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 
 多個關鍵字請用逗號分隔。修改 buyer_reports.ini 後重新雙擊 BuyerReports.exe 即可，不需要重新 build。
 
@@ -89,7 +100,7 @@ pp_sheet_keywords = PP, Data, Pivot
    也可以對 BuyerReports.exe 按右鍵，進入「內容」，若看到「解除封鎖」請勾選後套用。
 
 4. 找不到符合規則的 DPS 或 PP 工作表
-   DPS 請確認至少有一張工作表名稱包含 DPS，且內含 Line、W/O、AVTC P/N 與日期欄。
+   DPS 請確認至少有一張工作表名稱包含 DPS，且內含 Line、W/O、INI 內任一 DPS 料號欄別名與日期欄。
    PP 請確認至少有一張工作表名稱包含 buyer_reports.ini 內的 PP 關鍵字，且該工作表內有樞紐分析表。
 
 5. 只有其中一份報表產出

@@ -15,7 +15,6 @@ from .common import (
     Progress,
     clean_number,
     close_run_log,
-    find_header_row,
     first_sheet_matching_keywords,
     header_date,
     is_frozen_app,
@@ -34,10 +33,11 @@ from .common import (
 from .compare import compare
 from .dps import (
     DPS_COMPARE_SHEETS,
-    DPS_HEADER_KEYS,
+    DPS_PART_NUMBER_HEADERS,
     DPS_SOURCE_SHEET_KEYWORDS,
     DPS_TIDY_SHEET,
     detect_dps_tail_cutoff,
+    find_dps_header,
     generate_dps,
 )
 from .pp import PP_COMPARE_SHEETS, PP_TIDY_SHEET, generate_pp
@@ -124,6 +124,7 @@ def resolve_dps_tail_cutoff(
     dps_path: Path,
     tail_cutoff_arg: str,
     sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
+    part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
 ) -> dt.date | None:
     if tail_cutoff_arg.lower() == "none":
         return None
@@ -131,7 +132,7 @@ def resolve_dps_tail_cutoff(
         wb = load_workbook(dps_path, data_only=True)
         try:
             ws = first_sheet_matching_keywords(wb, sheet_keywords)
-            header_row = find_header_row(ws, DPS_HEADER_KEYS)
+            header_row, _pn_col, _pn_header = find_dps_header(ws, part_number_headers)
             dates = [d for d in (header_date(c) for c in ws[header_row]) if d]
             max_date = max(dates) if dates else None
         finally:
@@ -161,6 +162,7 @@ def run_dps_report(args, progress: Progress | None = None) -> dict:
                 dps_path,
                 args.dps_tail_cutoff,
                 sheet_keywords=args.dps_sheet_keywords,
+                part_number_headers=args.dps_part_number_headers,
             )
             if progress is not None and not output_step_done:
                 progress.step("DPS: 產出報表")
@@ -171,10 +173,12 @@ def run_dps_report(args, progress: Progress | None = None) -> dict:
                 include_star_parts=args.include_star_parts,
                 tail_cutoff=cutoff,
                 sheet_keywords=args.dps_sheet_keywords,
+                part_number_headers=args.dps_part_number_headers,
             )
             log("\n--- DPS ---")
             log(f"  來源            ：{info['source'].name}")
             log(f"  來源工作表      ：{info['source_sheet']}")
+            log(f"  料號欄          ：{info['part_number_header']}")
             log(f"  表頭列          ：第 {info['header_row']} 列")
             log(f"  日期欄          ：{info['date_columns']} 欄 / {info['dates']} 個日期"
                 f"（{info['date_range'][0]} ~ {info['date_range'][1]}，D+N 兩班合併）")
@@ -246,6 +250,7 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
                 base_year=args.pp_base_year,
                 report_date=args.pp_report_date,
                 sheet_keywords=args.pp_sheet_keywords,
+                part_number_keywords=args.pp_part_number_field_keywords,
             )
             log("\n--- PP ---")
             log(f"  來源            ：{info['source'].name}")
@@ -253,6 +258,7 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
             log(f"  樞紐分析表      ：{info['pivot_table'] or '未知'}")
             log(f"  樞紐快取        ：{info['cache_part']}"
                 f"（原始表 {info['cache_source_sheet'] or '未知'}，{info['records']} 筆）")
+            log(f"  料號欄          ：{info['part_number_field']}")
             log(f"  快取更新        ：{info['refreshed_date']} by {info['refreshed_by'] or '未知'}")
             log(f"  報表基準日      ：{info['report_date']}"
                 f"（主年度 20{info['base_year']}，起始週 WK{info['start_week']:02d}）")
@@ -304,6 +310,8 @@ def run_reports(args) -> bool:
     log(f"設定檔    ：{args.sheet_config_path}（{config_status}）")
     log(f"DPS sheet 關鍵字：{keyword_label(args.dps_sheet_keywords)}")
     log(f"PP sheet 關鍵字 ：{keyword_label(args.pp_sheet_keywords)}")
+    log(f"DPS 料號欄別名 ：{keyword_label(args.dps_part_number_headers)}")
+    log(f"PP 料號欄關鍵字：{keyword_label(args.pp_part_number_field_keywords)}")
     log("=" * 72)
 
     tasks = []
@@ -352,6 +360,8 @@ def main() -> int:
         args.sheet_config_loaded = sheet_config["loaded"]
         args.dps_sheet_keywords = sheet_config["dps_sheet_keywords"]
         args.pp_sheet_keywords = sheet_config["pp_sheet_keywords"]
+        args.dps_part_number_headers = sheet_config["dps_part_number_headers"]
+        args.pp_part_number_field_keywords = sheet_config["pp_part_number_field_keywords"]
         ok = run_reports(args)
         return 0 if ok else 1
     except SystemExit as exc:

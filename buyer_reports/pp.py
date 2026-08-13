@@ -21,10 +21,12 @@ from .common import (
     copy_cell_format,
     copy_column_layout,
     copy_row_layout,
+    DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
     DEFAULT_PP_SHEET_KEYWORDS,
     find_total_col,
     first_existing_sheet,
     keyword_label,
+    normalize_label,
     numeric,
     serial_to_date,
     set_filter_to_used_range,
@@ -41,6 +43,7 @@ MONTH_ABBR = [
 ]
 MONTH_INDEX = {name.lower(): i for i, name in enumerate(MONTH_ABBR, start=1)}
 PP_SOURCE_SHEET_KEYWORDS = DEFAULT_PP_SHEET_KEYWORDS
+PP_PART_NUMBER_FIELD_KEYWORDS = DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS
 
 # ---------------------------------------------------------------------------
 # PP：樞紐快取解析
@@ -160,11 +163,44 @@ def _cache_field_names(xlsx: zipfile.ZipFile, definition_part: str) -> list[str]
     return [cf.attrib.get("name", "") for cf in cache_fields]
 
 
+def field_matches_keywords(field_name: str, keywords: Sequence[str]) -> bool:
+    normalized = normalize_label(field_name)
+    return any(normalize_label(keyword) in normalized for keyword in keywords)
+
+
+def select_part_number_field(fields: Sequence[str], keywords: Sequence[str]) -> str | None:
+    matches = [
+        normalize_field(field)
+        for field in fields
+        if field_matches_keywords(normalize_field(field), keywords)
+    ]
+    if not matches:
+        return None
+
+    fg_matches = [field for field in matches if re.search(r"\bFG\b", field, re.IGNORECASE)]
+    if fg_matches:
+        if len(fg_matches) > 1:
+            warn(
+                "PP 樞紐快取中有多個符合料號關鍵字且包含 FG 的欄位，"
+                f"將使用第一個：{fg_matches[0]}；候選：{', '.join(fg_matches)}"
+            )
+        return fg_matches[0]
+
+    if len(matches) > 1:
+        warn(
+            "PP 樞紐快取中有多個符合料號關鍵字的欄位，"
+            f"將使用第一個：{matches[0]}；候選：{', '.join(matches)}"
+        )
+    return matches[0]
+
+
 def select_pp_pivot_source(
     pp_path: Path,
     sheet_keywords: Sequence[str] = PP_SOURCE_SHEET_KEYWORDS,
+    part_number_keywords: Sequence[str] = PP_PART_NUMBER_FIELD_KEYWORDS,
 ) -> dict[str, str]:
     keyword_text = keyword_label(sheet_keywords)
+    part_keyword_text = keyword_label(part_number_keywords)
     with zipfile.ZipFile(pp_path) as xlsx:
         workbook_cache_defs = _workbook_pivot_cache_definitions(xlsx)
         matched_sheet_names: list[str] = []
@@ -184,7 +220,8 @@ def select_pp_pivot_source(
                 if cache_definition is None:
                     continue
                 fields = _cache_field_names(xlsx, cache_definition)
-                if any(normalize_field(name) == "AVTC FG Part Number" for name in fields):
+                part_number_field = select_part_number_field(fields, part_number_keywords)
+                if part_number_field is not None:
                     if skipped_no_pivot:
                         warn(
                             f"下列工作表名稱包含 {keyword_text}，但沒有樞紐分析表，已略過："
@@ -196,10 +233,11 @@ def select_pp_pivot_source(
                         "pivot_table": pivot["pivot_table"] or "",
                         "cache_definition": cache_definition,
                         "cache_id": pivot["cache_id"] or "",
+                        "part_number_field": part_number_field,
                     }
             raise SystemExit(
                 f"{pp_path.name} 的 {sheet_name} 工作表有樞紐分析表，"
-                "但其樞紐快取找不到 'AVTC FG Part Number' 欄位。"
+                f"但其樞紐快取找不到名稱包含 {part_keyword_text} 的料號欄位。"
             )
 
     if matched_sheet_names:
@@ -240,7 +278,11 @@ def _pivot_cache_parts(xlsx: zipfile.ZipFile) -> list[tuple[str, str]]:
     return parts
 
 
-def parse_pivot_cache(pp_path: Path, definition_part: str | None = None) -> dict:
+def parse_pivot_cache(
+    pp_path: Path,
+    definition_part: str | None = None,
+    part_number_keywords: Sequence[str] = PP_PART_NUMBER_FIELD_KEYWORDS,
+) -> dict:
     with zipfile.ZipFile(pp_path) as xlsx:
         parts = _pivot_cache_parts(xlsx)
         if not parts:
@@ -258,14 +300,16 @@ def parse_pivot_cache(pp_path: Path, definition_part: str | None = None) -> dict
                 fields = []
             else:
                 fields = [cf.attrib.get("name", "") for cf in cache_fields]
-            if any(normalize_field(f) == "AVTC FG Part Number" for f in fields):
-                chosen = (definition_name, records_name, definition, fields)
+            part_number_field = select_part_number_field(fields, part_number_keywords)
+            if part_number_field is not None:
+                chosen = (definition_name, records_name, definition, fields, part_number_field)
                 break
         if chosen is None:
             raise SystemExit(
-                "樞紐快取中找不到 'AVTC FG Part Number' 欄位，來源檔格式可能已變更"
+                f"樞紐快取中找不到名稱包含 {keyword_label(part_number_keywords)} 的料號欄位，"
+                "來源檔格式可能已變更"
             )
-        definition_name, records_name, definition, fields = chosen
+        definition_name, records_name, definition, fields, part_number_field = chosen
 
         shared_by_field: list[list[str]] = []
         cache_fields = definition.find(f"{{{SPREADSHEET_NS}}}cacheFields")
@@ -313,6 +357,7 @@ def parse_pivot_cache(pp_path: Path, definition_part: str | None = None) -> dict
         return {
             "fields": fields,
             "records": records,
+            "part_number_field": part_number_field,
             "definition_part": definition_name,
             "refreshed_date": refreshed_date,
             "refreshed_by": refreshed_by,
@@ -326,15 +371,30 @@ def parse_pivot_cache(pp_path: Path, definition_part: str | None = None) -> dict
 
 WEEK_LABEL_RE = re.compile(r"^WK\s*(\d{1,2})(?:\s+([A-Za-z]{3,9}))?\s*'?$", re.IGNORECASE)
 MONTH_FCST_LABEL_RE = re.compile(r"^([A-Za-z]{3})\s*'?\s*(\d{2})\s*FCST$", re.IGNORECASE)
-MONTH_PLAIN_LABEL_RE = re.compile(r"^([A-Za-z]{3})\s*-\s*(\d{2})\s*'?$", re.IGNORECASE)
+MONTH_PLAIN_LABEL_RE = re.compile(r"^([A-Za-z]{3})\s*(?:-|')\s*(\d{2})\s*'?$", re.IGNORECASE)
 TOTAL_LABEL_RE = re.compile(r"total", re.IGNORECASE)
 
-CACHE_WEEK_RE = re.compile(r"^WK\s*(\d{1,2})\s+(\d{2})'([A-Za-z]{3})", re.IGNORECASE)
+CACHE_WEEK_OLD_RE = re.compile(r"^WK\s*(\d{1,2})\s+(\d{2})'([A-Za-z]{3,9})", re.IGNORECASE)
+CACHE_WEEK_MONTH_YEAR_RE = re.compile(
+    r"^WK\s*(\d{1,2})\s+([A-Za-z]{3,9})\s*'?\s*(\d{2})",
+    re.IGNORECASE,
+)
 CACHE_MONTH_RE = re.compile(r"^([A-Za-z]{3})\s*(?:'|-)\s*(\d{2})\s*(?:FCST)?$", re.IGNORECASE)
 
 
 def normalize_field(name: str) -> str:
     return name.replace("_x000a_", " ").replace("\n", " ").strip()
+
+
+def parse_cache_week(name: str) -> tuple[str, int, str] | None:
+    text = normalize_field(name)
+    m = CACHE_WEEK_OLD_RE.match(text)
+    if m:
+        return m.group(2), int(m.group(1)), m.group(3)[:3].title()
+    m = CACHE_WEEK_MONTH_YEAR_RE.match(text)
+    if m:
+        return m.group(3), int(m.group(1)), m.group(2)[:3].title()
+    return None
 
 
 def index_cache_periods(fields: Sequence[str]) -> tuple[dict, dict]:
@@ -343,9 +403,10 @@ def index_cache_periods(fields: Sequence[str]) -> tuple[dict, dict]:
     months: dict[tuple[str, str], int] = {}
     for idx, raw in enumerate(fields):
         name = normalize_field(raw)
-        m = CACHE_WEEK_RE.match(name)
-        if m:
-            weeks[(m.group(2), int(m.group(1)))].append(idx)
+        week = parse_cache_week(name)
+        if week:
+            year, week_num, _month = week
+            weeks[(year, week_num)].append(idx)
             continue
         m = CACHE_MONTH_RE.match(name)
         if m and m.group(1).lower() in MONTH_INDEX:
@@ -402,9 +463,9 @@ def build_pp_periods(
         covered_months = set()
         for w in range(start_week, start_week + 15):
             for idx in weeks.get((base_year, w), []):
-                m = CACHE_WEEK_RE.match(normalize_field(fields[idx]))
-                if m:
-                    covered_months.add(m.group(3).title())
+                week = parse_cache_week(normalize_field(fields[idx]))
+                if week:
+                    covered_months.add(week[2])
         for month in MONTH_ABBR:
             if (base_year, month) in months and month not in covered_months:
                 if MONTH_INDEX[month.lower()] > max(
@@ -439,9 +500,9 @@ def build_pp_periods(
             else:
                 candidates = []
                 for idx in weeks.get((base_year, week), []):
-                    cm = CACHE_WEEK_RE.match(normalize_field(fields[idx]))
-                    if cm:
-                        candidates.append(cm.group(3).title())
+                    cache_week = parse_cache_week(normalize_field(fields[idx]))
+                    if cache_week:
+                        candidates.append(cache_week[2])
                 if candidates:
                     month = current_month if current_month in candidates else candidates[0]
             if month:
@@ -523,21 +584,33 @@ def generate_pp(
     base_year: str | None = None,
     report_date: dt.date | None = None,
     sheet_keywords: Sequence[str] = PP_SOURCE_SHEET_KEYWORDS,
+    part_number_keywords: Sequence[str] = PP_PART_NUMBER_FIELD_KEYWORDS,
 ) -> dict:
-    pivot_source = select_pp_pivot_source(pp_path, sheet_keywords=sheet_keywords)
-    cache = parse_pivot_cache(pp_path, definition_part=pivot_source["cache_definition"])
+    pivot_source = select_pp_pivot_source(
+        pp_path,
+        sheet_keywords=sheet_keywords,
+        part_number_keywords=part_number_keywords,
+    )
+    cache = parse_pivot_cache(
+        pp_path,
+        definition_part=pivot_source["cache_definition"],
+        part_number_keywords=part_number_keywords,
+    )
     fields = cache["fields"]
     records = cache["records"]
 
     field_index = {normalize_field(name): idx for idx, name in enumerate(fields)}
-    required = ["Customer", "Model", "AVTC FG Part Number", "Plan"]
+    part_number_field = cache["part_number_field"]
+    required = ["Customer", "Model", "Plan"]
     missing = [name for name in required if name not in field_index]
     if missing:
         raise SystemExit(f"樞紐快取缺少必要欄位：{', '.join(missing)}")
+    if part_number_field not in field_index:
+        raise SystemExit(f"樞紐快取找不到選定的料號欄位：{part_number_field}")
 
     customer_idx = field_index["Customer"]
     model_idx = field_index["Model"]
-    pn_idx = field_index["AVTC FG Part Number"]
+    pn_idx = field_index[part_number_field]
     plan_idx = field_index["Plan"]
 
     if report_date is None:
@@ -596,7 +669,13 @@ def generate_pp(
             + [clean_number(aggregate[pn][label]) for label in labels]
         )
 
-    write_pp_workbook(output_path, labels, rows, template_path=pp_path)
+    write_pp_workbook(
+        output_path,
+        labels,
+        rows,
+        part_number_header=part_number_field,
+        template_path=pp_path,
+    )
 
     return {
         "source": pp_path,
@@ -605,6 +684,7 @@ def generate_pp(
         "cache_id": pivot_source["cache_id"],
         "cache_part": cache["definition_part"],
         "cache_source_sheet": cache["source_sheet"],
+        "part_number_field": part_number_field,
         "refreshed_date": cache["refreshed_date"],
         "refreshed_by": cache["refreshed_by"],
         "records": len(records),
@@ -630,6 +710,7 @@ def write_pp_workbook(
     output_path: Path,
     labels: Sequence[str],
     rows: Sequence[list],
+    part_number_header: str = "AVTC FG Part Number",
     template_path: Path | None = None,
 ) -> None:
     wb = Workbook()
@@ -637,7 +718,7 @@ def write_pp_workbook(
     ws.title = PP_TIDY_SHEET
 
     ws.cell(1, 1, "Customer")
-    ws.cell(1, 2, "AVTC FG Part Number")
+    ws.cell(1, 2, part_number_header)
     ws.cell(1, 3, "Model")
     for offset, label in enumerate(labels):
         ws.cell(1, 4 + offset, label)
