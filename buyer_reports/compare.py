@@ -14,6 +14,13 @@ from .common import clean_number, header_date, log, numeric
 # ---------------------------------------------------------------------------
 
 
+def _label_key(cell):
+    date = header_date(cell)
+    if date is not None:
+        return f"{date.month}/{date.day}"
+    return str(cell.value).strip()
+
+
 def _load_grid(
     path: Path,
     sheet: str | Sequence[str],
@@ -35,8 +42,7 @@ def _load_grid(
             text = str(cell.value).strip()
             if text.lower() == "total":
                 continue
-            date = header_date(cell)
-            labels[cell.column] = date if date is not None else text
+            labels[cell.column] = _label_key(cell)
         grid = {}
         for row in ws.iter_rows(min_row=label_row + 1):
             key = row[key_col - 1].value

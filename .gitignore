@@ -1,5 +1,12 @@
-# 產出檔（每次執行重新生成，不納入版控）
-output/
+# 產出檔（每次執行重新生成，不納入版控；只保留空資料夾 placeholder）
+output/*
+!output/.gitkeep
+!output/AVTC/
+!output/RAKEN/
+output/AVTC/*
+output/RAKEN/*
+!output/AVTC/.gitkeep
+!output/RAKEN/.gitkeep
 
 # Python
 __pycache__/
@@ -17,3 +24,4 @@ release/
 
 # Local input Excel files
 intput/*.xlsx
+intput/**/*.xlsx

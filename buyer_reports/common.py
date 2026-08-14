@@ -26,13 +26,19 @@ DEFAULT_DPS_SHEET_KEYWORDS = ("DPS",)
 DEFAULT_PP_SHEET_KEYWORDS = ("PP", "Data")
 DEFAULT_DPS_PART_NUMBER_HEADERS = ("AVTC P/N", "P/N", "Model")
 DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS = ("Part Number",)
+DEFAULT_CUSTOMERS = ("AVTC", "RAKEN")
+DEFAULT_CUSTOMER_MODES = {
+    "AVTC": {"dps_mode": "first_valid", "pp_mode": "first_valid"},
+    "RAKEN": {"dps_mode": "merge_all", "pp_mode": "first_valid"},
+}
+VALID_REPORT_MODES = ("first_valid", "merge_all")
 
 # ---------------------------------------------------------------------------
 # 共用小工具
 # ---------------------------------------------------------------------------
 
 _LOG_QUIET = False
-_LOG_FILE = None
+_LOG_FILES = []
 _PROGRESS_BAR = None
 
 
@@ -47,9 +53,9 @@ def log(message: str = "") -> None:
             _PROGRESS_BAR.write(message)
         else:
             print(message, flush=True)
-    if _LOG_FILE is not None:
-        _LOG_FILE.write(message + "\n")
-        _LOG_FILE.flush()
+    for log_file in _LOG_FILES:
+        log_file.write(message + "\n")
+        log_file.flush()
 
 
 def warn(message: str) -> None:
@@ -58,9 +64,9 @@ def warn(message: str) -> None:
         _PROGRESS_BAR.write(text, file=sys.stderr)
     else:
         print(text, file=sys.stderr, flush=True)
-    if _LOG_FILE is not None:
-        _LOG_FILE.write(text + "\n")
-        _LOG_FILE.flush()
+    for log_file in _LOG_FILES:
+        log_file.write(text + "\n")
+        log_file.flush()
 
 
 class Progress:
@@ -108,6 +114,19 @@ def parse_keyword_list(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(keywords))
 
 
+def parse_report_mode(value: str, fallback: str, label: str) -> str:
+    mode = value.strip().lower()
+    if not mode:
+        return fallback
+    if mode not in VALID_REPORT_MODES:
+        warn(
+            f"{label} 模式 {value!r} 不支援，已改用 {fallback!r}。"
+            f"可用模式：{', '.join(VALID_REPORT_MODES)}"
+        )
+        return fallback
+    return mode
+
+
 def load_sheet_detection_config(root: Path) -> dict:
     config_path = root / CONFIG_FILE_NAME
     result = {
@@ -117,6 +136,14 @@ def load_sheet_detection_config(root: Path) -> dict:
         "pp_sheet_keywords": DEFAULT_PP_SHEET_KEYWORDS,
         "dps_part_number_headers": DEFAULT_DPS_PART_NUMBER_HEADERS,
         "pp_part_number_field_keywords": DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
+        "customers": [
+            {
+                "name": name,
+                "dps_mode": DEFAULT_CUSTOMER_MODES[name]["dps_mode"],
+                "pp_mode": DEFAULT_CUSTOMER_MODES[name]["pp_mode"],
+            }
+            for name in DEFAULT_CUSTOMERS
+        ],
     }
     if not config_path.is_file():
         return result
@@ -147,6 +174,34 @@ def load_sheet_detection_config(root: Path) -> dict:
         )
         if part_keywords:
             result["pp_part_number_field_keywords"] = part_keywords
+    customer_names = DEFAULT_CUSTOMERS
+    if parser.has_section("customers"):
+        configured_names = parse_keyword_list(parser.get("customers", "names", fallback=""))
+        if configured_names:
+            customer_names = configured_names
+    customers = []
+    section_map = {section.casefold(): section for section in parser.sections()}
+    for name in customer_names:
+        defaults = DEFAULT_CUSTOMER_MODES.get(
+            name.upper(), {"dps_mode": "first_valid", "pp_mode": "first_valid"}
+        )
+        section = section_map.get(f"customer.{name}".casefold())
+        dps_mode = defaults["dps_mode"]
+        pp_mode = defaults["pp_mode"]
+        if section:
+            dps_mode = parse_report_mode(
+                parser.get(section, "dps_mode", fallback=dps_mode),
+                defaults["dps_mode"],
+                f"{name} DPS",
+            )
+            pp_mode = parse_report_mode(
+                parser.get(section, "pp_mode", fallback=pp_mode),
+                defaults["pp_mode"],
+                f"{name} PP",
+            )
+        customers.append({"name": name, "dps_mode": dps_mode, "pp_mode": pp_mode})
+    if customers:
+        result["customers"] = customers
     return result
 
 
@@ -210,25 +265,41 @@ def prevent_temp_execution() -> None:
     raise SystemExit(message.replace("\n", " "))
 
 
-def setup_run_log(out_dir: Path) -> Path:
-    global _LOG_FILE
-    log_path = out_dir / "run.log"
-    _LOG_FILE = log_path.open("w", encoding="utf-8")
-    return log_path
+def setup_run_log(out_dirs: Path | Sequence[Path]) -> tuple[Path, ...]:
+    global _LOG_FILES
+    close_run_log()
+    if isinstance(out_dirs, Path):
+        dirs = [out_dirs]
+    else:
+        dirs = list(out_dirs)
+
+    log_paths = []
+    seen = set()
+    for out_dir in dirs:
+        log_path = out_dir / "run.log"
+        key = log_path.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _LOG_FILES.append(log_path.open("w", encoding="utf-8"))
+        log_paths.append(log_path)
+    return tuple(log_paths)
 
 
 def close_run_log() -> None:
-    global _LOG_FILE
-    if _LOG_FILE is not None:
-        _LOG_FILE.close()
-        _LOG_FILE = None
+    global _LOG_FILES
+    for log_file in _LOG_FILES:
+        log_file.close()
+    _LOG_FILES = []
 
 
 def write_traceback(detail: str) -> None:
-    if _LOG_FILE is not None:
-        _LOG_FILE.write("\n--- traceback ---\n")
-        _LOG_FILE.write(detail)
-        _LOG_FILE.flush()
+    if _LOG_FILES:
+        for log_file in _LOG_FILES:
+            log_file.write("\n--- traceback ---\n")
+            log_file.write(detail)
+            log_file.flush()
     else:
         print(detail, file=sys.stderr)
 
@@ -264,6 +335,34 @@ def clean_number(value: float):
     if abs(value - round(value)) < 1e-9:
         return int(round(value))
     return value
+
+
+def text_value(value) -> str:
+    """把輸出值固定轉成 Excel 文字格式使用的字串。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        return str(clean_number(float(value)))
+    return str(value)
+
+
+def write_text_cell(cell, value) -> None:
+    cell.value = text_value(value)
+    cell.number_format = "@"
+
+
+def enforce_text_range(ws, max_row: int, max_col: int) -> None:
+    for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
+        for cell in row:
+            if cell.value is not None:
+                cell.value = text_value(cell.value)
+            cell.number_format = "@"
+
+
+def date_text(date: dt.date) -> str:
+    return f"{date.month}/{date.day}"
 
 
 def serial_to_date(serial: float) -> dt.date:

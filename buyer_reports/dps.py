@@ -17,8 +17,10 @@ from .common import (
     copy_cell_format,
     copy_column_layout,
     copy_row_layout,
+    date_text,
     DEFAULT_DPS_SHEET_KEYWORDS,
     DEFAULT_DPS_PART_NUMBER_HEADERS,
+    enforce_text_range,
     find_total_col,
     first_existing_sheet,
     first_sheet_matching_keywords,
@@ -27,6 +29,7 @@ from .common import (
     normalize_label,
     set_filter_to_used_range,
     warn,
+    write_text_cell,
 )
 
 # ---------------------------------------------------------------------------
@@ -99,11 +102,9 @@ def find_dps_header(ws, part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEA
     )
 
 
-def generate_dps(
+def read_dps_data(
     dps_path: Path,
-    output_path: Path,
     include_star_parts: bool = False,
-    tail_cutoff: dt.date | None = None,
     sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
     part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
 ) -> dict:
@@ -187,46 +188,192 @@ def generate_dps(
         else:
             excluded.clear()
 
-        # 決定輸出欄：cutoff 之後的日期全部併入 cutoff 這一欄
-        if tail_cutoff is not None:
-            out_dates = [d for d in all_dates if d < tail_cutoff] + [tail_cutoff]
-        else:
-            out_dates = all_dates
-
-        def bucket(date: dt.date) -> dt.date:
-            if tail_cutoff is not None and date >= tail_cutoff:
-                return tail_cutoff
-            return date
-
-        rows: list[tuple[str, bool, dict[dt.date, float]]] = []
-        for pn in sorted(
-            label_is_numeric, key=lambda p: excel_label_sort_key(p, label_is_numeric[p])
-        ):
-            values: dict[dt.date, float] = defaultdict(float)
-            for date, qty in aggregate.get(pn, {}).items():
-                values[bucket(date)] += qty
-            rows.append((pn, label_is_numeric[pn], values))
-
-        write_dps_workbook(output_path, out_dates, rows, template_path=dps_path)
-
-        grand_total = sum(sum(v.values()) for _pn, _n, v in rows)
         return {
             "source": dps_path,
             "source_sheet": ws.title,
             "header_row": header_row,
             "part_number_header": pn_header,
+            "aggregate": aggregate,
+            "label_is_numeric": label_is_numeric,
+            "all_dates": all_dates,
             "date_columns": len(date_columns),
             "dates": len(all_dates),
             "date_range": (all_dates[0], all_dates[-1]),
-            "tail_cutoff": tail_cutoff,
-            "out_columns": len(out_dates),
-            "rows": len(rows),
-            "grand_total": clean_number(grand_total),
             "excluded": dict(excluded),
             "text_cells": text_cells,
         }
     finally:
         wb.close()
+
+
+def combine_dps_data(items: Sequence[dict]) -> dict:
+    aggregate: dict[str, dict[dt.date, float]] = defaultdict(lambda: defaultdict(float))
+    label_is_numeric: dict[str, bool] = {}
+    all_dates: set[dt.date] = set()
+    excluded: dict[str, float] = defaultdict(float)
+    text_cells = 0
+    date_columns = 0
+    sources = []
+
+    for item in items:
+        sources.append(item)
+        date_columns += item["date_columns"]
+        text_cells += item["text_cells"]
+        all_dates.update(item["all_dates"])
+        for pn, is_numeric in item["label_is_numeric"].items():
+            label_is_numeric.setdefault(pn, is_numeric)
+        for pn, values in item["aggregate"].items():
+            for date, qty in values.items():
+                aggregate[pn][date] += qty
+        for pn, qty in item["excluded"].items():
+            excluded[pn] += qty
+
+    if not all_dates:
+        raise SystemExit("DPS 來源中找不到任何日期欄")
+
+    sorted_dates = sorted(all_dates)
+    return {
+        "sources": sources,
+        "aggregate": aggregate,
+        "label_is_numeric": label_is_numeric,
+        "all_dates": sorted_dates,
+        "date_columns": date_columns,
+        "dates": len(sorted_dates),
+        "date_range": (sorted_dates[0], sorted_dates[-1]),
+        "excluded": dict(excluded),
+        "text_cells": text_cells,
+    }
+
+
+def build_dps_rows(
+    aggregate: dict[str, dict[dt.date, float]],
+    label_is_numeric: dict[str, bool],
+    all_dates: Sequence[dt.date],
+    tail_cutoff: dt.date | None = None,
+) -> tuple[list[dt.date], list[tuple[str, bool, dict[dt.date, float]]]]:
+    # 決定輸出欄：cutoff 之後的日期全部併入 cutoff 這一欄
+    if tail_cutoff is not None:
+        out_dates = [d for d in all_dates if d < tail_cutoff] + [tail_cutoff]
+    else:
+        out_dates = list(all_dates)
+
+    def bucket(date: dt.date) -> dt.date:
+        if tail_cutoff is not None and date >= tail_cutoff:
+            return tail_cutoff
+        return date
+
+    rows: list[tuple[str, bool, dict[dt.date, float]]] = []
+    for pn in sorted(label_is_numeric, key=lambda p: excel_label_sort_key(p, label_is_numeric[p])):
+        values: dict[dt.date, float] = defaultdict(float)
+        for date, qty in aggregate.get(pn, {}).items():
+            values[bucket(date)] += qty
+        rows.append((pn, label_is_numeric[pn], values))
+    return out_dates, rows
+
+
+def generate_dps(
+    dps_path: Path,
+    output_path: Path,
+    include_star_parts: bool = False,
+    tail_cutoff: dt.date | None = None,
+    sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
+    part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
+) -> dict:
+    data = read_dps_data(
+        dps_path,
+        include_star_parts=include_star_parts,
+        sheet_keywords=sheet_keywords,
+        part_number_headers=part_number_headers,
+    )
+    out_dates, rows = build_dps_rows(
+        data["aggregate"],
+        data["label_is_numeric"],
+        data["all_dates"],
+        tail_cutoff,
+    )
+    write_dps_workbook(output_path, out_dates, rows, template_path=dps_path)
+
+    grand_total = sum(sum(v.values()) for _pn, _n, v in rows)
+    return {
+        "source": dps_path,
+        "source_sheet": data["source_sheet"],
+        "header_row": data["header_row"],
+        "part_number_header": data["part_number_header"],
+        "date_columns": data["date_columns"],
+        "dates": data["dates"],
+        "date_range": data["date_range"],
+        "tail_cutoff": tail_cutoff,
+        "out_columns": len(out_dates),
+        "rows": len(rows),
+        "grand_total": clean_number(grand_total),
+        "excluded": data["excluded"],
+        "text_cells": data["text_cells"],
+    }
+
+
+def generate_merged_dps(
+    dps_paths: Sequence[Path],
+    output_path: Path,
+    include_star_parts: bool = False,
+    tail_cutoff: dt.date | None = None,
+    sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
+    part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
+) -> dict:
+    items = []
+    skipped = []
+    for dps_path in dps_paths:
+        try:
+            items.append(
+                read_dps_data(
+                    dps_path,
+                    include_star_parts=include_star_parts,
+                    sheet_keywords=sheet_keywords,
+                    part_number_headers=part_number_headers,
+                )
+            )
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - 合併模式需略過壞檔
+            skipped.append((dps_path, str(exc)))
+            warn(f"DPS 來源檔 {dps_path.name} 無法併入，已略過。原因：{exc}")
+
+    if not items:
+        raise SystemExit("所有 DPS 來源檔都無法產出，未建立合併檔。")
+
+    combined = combine_dps_data(items)
+    out_dates, rows = build_dps_rows(
+        combined["aggregate"],
+        combined["label_is_numeric"],
+        combined["all_dates"],
+        tail_cutoff,
+    )
+    template_path = items[0]["source"]
+    write_dps_workbook(output_path, out_dates, rows, template_path=template_path)
+
+    grand_total = sum(sum(v.values()) for _pn, _n, v in rows)
+    return {
+        "sources": [item["source"] for item in items],
+        "source_details": [
+            {
+                "source": item["source"],
+                "source_sheet": item["source_sheet"],
+                "header_row": item["header_row"],
+                "part_number_header": item["part_number_header"],
+                "date_columns": item["date_columns"],
+                "dates": item["dates"],
+                "date_range": item["date_range"],
+            }
+            for item in items
+        ],
+        "skipped": skipped,
+        "tail_cutoff": tail_cutoff,
+        "date_columns": combined["date_columns"],
+        "dates": combined["dates"],
+        "date_range": combined["date_range"],
+        "out_columns": len(out_dates),
+        "rows": len(rows),
+        "grand_total": clean_number(grand_total),
+        "excluded": combined["excluded"],
+        "text_cells": combined["text_cells"],
+    }
 
 
 def write_dps_workbook(
@@ -239,27 +386,23 @@ def write_dps_workbook(
     ws = wb.active
     ws.title = DPS_TIDY_SHEET
 
-    ws.cell(1, 1, "行标签")
+    write_text_cell(ws.cell(1, 1), "行标签")
     for offset, date in enumerate(dates):
-        cell = ws.cell(1, 2 + offset, dt.datetime(date.year, date.month, date.day))
-        cell.number_format = "m/d;@"
+        write_text_cell(ws.cell(1, 2 + offset), date_text(date))
     total_col = 2 + len(dates)
-    ws.cell(1, total_col, "total")
-
-    first_letter = get_column_letter(2)
-    last_letter = get_column_letter(total_col - 1)
+    write_text_cell(ws.cell(1, total_col), "total")
 
     for r_offset, (pn, is_numeric, values) in enumerate(rows):
         r = 2 + r_offset
-        ws.cell(r, 1, float(pn) if is_numeric else pn)
-        if is_numeric:
-            ws.cell(r, 1).number_format = "General"
+        write_text_cell(ws.cell(r, 1), pn)
+        total_qty = 0.0
         for offset, date in enumerate(dates):
             qty = values.get(date, 0.0)
             # 人工版的空白格是留空而非填 0，這裡保持一致
             if qty:
-                ws.cell(r, 2 + offset, clean_number(qty))
-        ws.cell(r, total_col, f"=SUM({first_letter}{r}:{last_letter}{r})")
+                write_text_cell(ws.cell(r, 2 + offset), clean_number(qty))
+                total_qty += qty
+        write_text_cell(ws.cell(r, total_col), clean_number(total_qty))
 
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -269,6 +412,7 @@ def write_dps_workbook(
     ws.column_dimensions["A"].width = 24.83
     last_row = len(rows) + 1
     apply_dps_layout(ws, template_path, total_col, last_row)
+    enforce_text_range(ws, last_row, total_col)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)

@@ -9,6 +9,8 @@ DPS：
 4. 正常格式下，每個日期應該有兩欄，也就是 D / N 兩班。程式預設會把同一天的欄位加總。
 5. 料號欄預設可使用 AVTC P/N、P/N 或 Model。
 6. 料號結尾帶 * 的資料預設會被排除。
+7. AVTC DPS 維持原本邏輯：取第一份格式正確的檔案。
+8. RAKEN DPS 會合併 RAKEN 資料夾內所有格式正確的 DPS 檔，同料號同日期累加。
 
 PP：
 1. 檔名需包含 PP 字眼。
@@ -29,10 +31,15 @@ BuyerReports/
   _internal/
   buyer_reports.ini
   intput/
+    AVTC/
+    RAKEN/
   output/
+    AVTC/
+    RAKEN/
   Windows執行檔(exe)使用說明.txt
 
 注意：輸入資料夾名稱是 intput，請不要改名。
+注意：AVTC 檔案請放 intput/AVTC，RAKEN 檔案請放 intput/RAKEN。
 注意：buyer_reports.ini 是 sheet / 欄位偵測關鍵字設定，請和 BuyerReports.exe 放在同一層。
 注意：如果收到的是 zip 壓縮檔，請先完整解壓縮，不要在壓縮檔視窗內直接雙擊 BuyerReports.exe。
 
@@ -42,7 +49,9 @@ BuyerReports/
 
 2. 進入解壓後的 BuyerReports 資料夾。
 
-3. 把 DPS 與 PP 來源 Excel 檔放進 intput 資料夾。
+3. 把 DPS 與 PP 來源 Excel 檔放進對應資料夾。
+   - AVTC 檔案放進 intput/AVTC
+   - RAKEN 檔案放進 intput/RAKEN
    - DPS 檔名需包含 DPS
    - PP 檔名需包含 PP
 
@@ -52,11 +61,14 @@ BuyerReports/
    若 Windows 顯示 SmartScreen 警告，請確認檔案來源可信後，點「更多資訊」再點「仍要執行」。
    執行時會顯示階段式進度條。
 
-6. 執行完成後，到 output 資料夾取得：
-   - DPS整理後.xlsx
-   - PP整理後.xlsx
+6. 執行完成後，到對應 output 資料夾取得：
+   - output/AVTC/DPS整理後.xlsx
+   - output/AVTC/PP整理後.xlsx
+   - output/RAKEN/DPS整理後.xlsx
+   - output/RAKEN/PP整理後.xlsx
+   實際會產出哪些檔案，取決於該客戶資料夾內是否有對應來源檔。
 
-7. 每次執行都會產生 output/run.log。
+7. 每次執行都會在對應的客戶 output 資料夾產生 run.log，例如 output/RAKEN/run.log。
    如果某一種報表格式錯誤，工具會略過該報表並繼續嘗試另一種報表。
    若有報表未產出，請把 run.log 交給維護者確認原因。
 
@@ -75,6 +87,17 @@ part_number_headers = AVTC P/N, P/N, Model
 [pp]
 part_number_field_keywords = Part Number
 
+[customers]
+names = AVTC, RAKEN
+
+[customer.AVTC]
+dps_mode = first_valid
+pp_mode = first_valid
+
+[customer.RAKEN]
+dps_mode = merge_all
+pp_mode = first_valid
+
 若未來 PP 的樞紐分析表 sheet 改成其他命名，例如 Pivot，可改成：
 
 [sheet_detection]
@@ -86,11 +109,15 @@ pp_sheet_keywords = PP, Data, Pivot
 part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 
 多個關鍵字請用逗號分隔。修改 buyer_reports.ini 後重新雙擊 BuyerReports.exe 即可，不需要重新 build。
+dps_mode = first_valid 代表取第一份格式正確的 DPS。
+dps_mode = merge_all 代表合併該客戶資料夾內所有格式正確的 DPS。
+
+輸出檔的標題、料號、數量與 total 會以文字格式寫入；total 由程式先計算好，不使用 Excel 公式。
 
 五、常見問題
 
 1. 找不到 DPS 或 PP 檔案
-   請確認檔案已放在 intput 資料夾，且檔名包含 DPS 或 PP。
+   請確認檔案已放在 intput/AVTC 或 intput/RAKEN，且檔名包含 DPS 或 PP。
 
 2. Windows 顯示「無法訪問指定設備、路徑或文件」
    請確認不是在 zip 壓縮檔視窗內直接執行。請先完整解壓縮，再到解壓後的 BuyerReports 資料夾內執行。
@@ -104,7 +131,7 @@ part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
    PP 請確認至少有一張工作表名稱包含 buyer_reports.ini 內的 PP 關鍵字，且該工作表內有樞紐分析表。
 
 5. 只有其中一份報表產出
-   代表另一份來源檔可能格式不符。請查看 output/run.log 裡的警告原因。
+   代表另一份來源檔可能格式不符。請查看對應客戶 output 資料夾內的 run.log。
    若 output 內已有同名整理後檔案，可能是前次執行留下的舊檔，請以 run.log 的本次摘要為準。
 
 6. 無法寫入 output

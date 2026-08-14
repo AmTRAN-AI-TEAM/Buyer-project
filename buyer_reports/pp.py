@@ -23,6 +23,7 @@ from .common import (
     copy_row_layout,
     DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
     DEFAULT_PP_SHEET_KEYWORDS,
+    enforce_text_range,
     find_total_col,
     first_existing_sheet,
     keyword_label,
@@ -32,6 +33,7 @@ from .common import (
     set_filter_to_used_range,
     sheet_name_matches_keywords,
     warn,
+    write_text_cell,
 )
 
 SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -717,29 +719,25 @@ def write_pp_workbook(
     ws = wb.active
     ws.title = PP_TIDY_SHEET
 
-    ws.cell(1, 1, "Customer")
-    ws.cell(1, 2, part_number_header)
-    ws.cell(1, 3, "Model")
+    write_text_cell(ws.cell(1, 1), "Customer")
+    write_text_cell(ws.cell(1, 2), part_number_header)
+    write_text_cell(ws.cell(1, 3), "Model")
     for offset, label in enumerate(labels):
-        ws.cell(1, 4 + offset, label)
-    first_col = 4
+        write_text_cell(ws.cell(1, 4 + offset), label)
     last_col = 3 + len(labels)
     total_col = last_col + PP_SPACER_COLS + 1
-    ws.cell(1, total_col, "total")
-
-    first_letter = get_column_letter(first_col)
-    last_letter = get_column_letter(last_col)
+    write_text_cell(ws.cell(1, total_col), "total")
 
     for r_offset, row in enumerate(rows):
         r = 2 + r_offset
-        ws.cell(r, 1, row[0])
-        ws.cell(r, 2, row[1])
-        ws.cell(r, 3, row[2])
+        write_text_cell(ws.cell(r, 1), row[0])
+        write_text_cell(ws.cell(r, 2), row[1])
+        write_text_cell(ws.cell(r, 3), row[2])
+        total_value = 0.0
         for offset, value in enumerate(row[3:]):
-            cell = ws.cell(r, 4 + offset, value)
-            cell.number_format = "#,##0_ "
-        total = ws.cell(r, total_col, f"=SUM({first_letter}{r}:{last_letter}{r})")
-        total.number_format = "#,##0_ "
+            write_text_cell(ws.cell(r, 4 + offset), value)
+            total_value += numeric(value)
+        write_text_cell(ws.cell(r, total_col), clean_number(total_value))
 
     for cell in ws[1]:
         if cell.value is not None:
@@ -754,6 +752,7 @@ def write_pp_workbook(
         ws.column_dimensions[get_column_letter(4 + offset)].width = 13.0
     last_row = len(rows) + 1
     apply_pp_layout(ws, template_path, last_col, total_col, last_row)
+    enforce_text_range(ws, last_row, total_col)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)

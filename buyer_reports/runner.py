@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import re
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -39,10 +40,31 @@ from .dps import (
     detect_dps_tail_cutoff,
     find_dps_header,
     generate_dps,
+    generate_merged_dps,
 )
 from .pp import PP_COMPARE_SHEETS, PP_TIDY_SHEET, generate_pp
 
-def find_input_candidates(input_dir: Path, patterns: Sequence[str], kind: str) -> list[Path]:
+
+@dataclass(frozen=True)
+class RunContext:
+    name: str
+    input_dir: Path
+    out_dir: Path
+    dps_mode: str
+    pp_mode: str
+    legacy: bool = False
+
+    @property
+    def label(self) -> str:
+        return self.name if self.name else "預設"
+
+
+def find_input_candidates(
+    input_dir: Path,
+    patterns: Sequence[str],
+    kind: str,
+    multiple_action: str = "將依修改時間由新到舊嘗試。",
+) -> list[Path]:
     """在 intput/ 底下依關鍵字找輸入檔；多個候選時依修改時間由新到舊回傳。"""
     if not input_dir.is_dir():
         raise SystemExit(f"找不到輸入資料夾：{input_dir}")
@@ -59,7 +81,7 @@ def find_input_candidates(input_dir: Path, patterns: Sequence[str], kind: str) -
         )
     if len(candidates) > 1:
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        warn(f"{kind} 有多個候選檔，將依修改時間由新到舊嘗試。")
+        warn(f"{kind} 有多個候選檔，{multiple_action}")
     return candidates
 
 
@@ -114,10 +136,84 @@ def _error_message(exc: BaseException) -> str:
     return str(exc)
 
 
-def candidate_paths(explicit_path: Path | None, input_dir: Path, patterns: Sequence[str], kind: str) -> list[Path]:
+def candidate_paths(
+    explicit_path: Path | None,
+    input_dir: Path,
+    patterns: Sequence[str],
+    kind: str,
+    multiple_action: str = "將依修改時間由新到舊嘗試。",
+) -> list[Path]:
     if explicit_path is not None:
         return [explicit_path]
-    return find_input_candidates(input_dir, patterns, kind)
+    return find_input_candidates(input_dir, patterns, kind, multiple_action)
+
+
+def has_excel_files(input_dir: Path) -> bool:
+    return input_dir.is_dir() and any(
+        path.is_file() and path.suffix.lower() == ".xlsx" and not path.name.startswith("~$")
+        for path in input_dir.glob("*.xlsx")
+    )
+
+
+def build_run_contexts(args) -> list[RunContext]:
+    args.context_warnings = []
+    for customer in args.customers:
+        (args.input_dir / customer["name"]).mkdir(parents=True, exist_ok=True)
+
+    if args.dps is not None or args.pp is not None:
+        return [
+            RunContext(
+                name="",
+                input_dir=args.input_dir,
+                out_dir=args.out_dir,
+                dps_mode="first_valid",
+                pp_mode="first_valid",
+                legacy=True,
+            )
+        ]
+
+    contexts = []
+    for customer in args.customers:
+        customer_dir = args.input_dir / customer["name"]
+        if not has_excel_files(customer_dir):
+            continue
+        contexts.append(
+            RunContext(
+                name=customer["name"],
+                input_dir=customer_dir,
+                out_dir=args.out_dir / customer["name"],
+                dps_mode=customer["dps_mode"],
+                pp_mode=customer["pp_mode"],
+            )
+        )
+
+    if contexts:
+        if has_excel_files(args.input_dir):
+            args.context_warnings.append(
+                "已偵測到客戶資料夾內有 Excel，intput 根目錄下的 Excel 將不處理。"
+            )
+        return contexts
+
+    if has_excel_files(args.input_dir):
+        args.context_warnings.append(
+            "未偵測到 AVTC/RAKEN 客戶資料夾內有 Excel，改用舊版 intput 根目錄流程。"
+        )
+        return [
+            RunContext(
+                name="",
+                input_dir=args.input_dir,
+                out_dir=args.out_dir,
+                dps_mode="first_valid",
+                pp_mode="first_valid",
+                legacy=True,
+            )
+        ]
+
+    return []
+
+
+def log_path_label(paths: Sequence[Path]) -> str:
+    return "、".join(str(path) for path in paths)
 
 
 def resolve_dps_tail_cutoff(
@@ -141,18 +237,155 @@ def resolve_dps_tail_cutoff(
     return parse_date_arg(tail_cutoff_arg)
 
 
-def run_dps_report(args, progress: Progress | None = None) -> dict:
+def resolve_dps_tail_cutoff_for_paths(
+    dps_paths: Sequence[Path],
+    args,
+    sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
+    part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
+) -> dt.date | None:
+    if args.dps_tail_cutoff.lower() == "none":
+        return None
+    if args.dps_tail_cutoff.lower() != "auto":
+        return parse_date_arg(args.dps_tail_cutoff)
+
+    cutoffs = []
+    for dps_path in dps_paths:
+        try:
+            cutoff = resolve_dps_tail_cutoff(
+                dps_path,
+                args.dps_tail_cutoff,
+                sheet_keywords=sheet_keywords,
+                part_number_headers=part_number_headers,
+            )
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - 壞檔稍後合併時會再略過
+            warn(f"DPS 來源檔 {dps_path.name} 無法推斷末欄彙總桶，已略過此步。原因：{exc}")
+            continue
+        if cutoff is not None:
+            cutoffs.append(cutoff)
+
+    unique = sorted(set(cutoffs))
+    if not unique:
+        return None
+    if len(unique) > 1:
+        warn(
+            "多份 DPS 來源檔推斷出不同末欄彙總桶，"
+            f"將使用最早日期 {unique[0]}；候選：{', '.join(map(str, unique))}"
+        )
+    return unique[0]
+
+
+def log_single_dps_info(info: dict, dps_out: Path, title: str) -> None:
+    log(f"\n--- {title} ---")
+    log(f"  來源            ：{info['source'].name}")
+    log(f"  來源工作表      ：{info['source_sheet']}")
+    log(f"  料號欄          ：{info['part_number_header']}")
+    log(f"  表頭列          ：第 {info['header_row']} 列")
+    log(f"  日期欄          ：{info['date_columns']} 欄 / {info['dates']} 個日期"
+        f"（{info['date_range'][0]} ~ {info['date_range'][1]}，D+N 兩班合併）")
+    if info["tail_cutoff"]:
+        log(f"  末欄彙總桶      ：{info['tail_cutoff']} 起之日期併入同一欄"
+            f"（沿用既有整理後版面）")
+    else:
+        log("  末欄彙總桶      ：未使用，每個日期各自成欄")
+    log(f"  輸出            ：{info['rows']} 列 x {info['out_columns']} 個日期欄，"
+        f"合計 {info['grand_total']:,} pcs")
+    if info["excluded"]:
+        total = clean_number(sum(info["excluded"].values()))
+        log(f"  已排除 * 料號   ：{len(info['excluded'])} 個，合計 {total:,} pcs"
+            f"（用 --include-star-parts 可保留）")
+        for pn, qty in sorted(info["excluded"].items()):
+            log(f"      - {pn}  {clean_number(qty):,}")
+    if info["text_cells"]:
+        log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
+    log("  輸出格式        ：文字")
+    log(f"  產出檔          ：{dps_out}")
+
+
+def log_merged_dps_info(info: dict, dps_out: Path, title: str) -> None:
+    log(f"\n--- {title} ---")
+    log(f"  模式            ：合併所有可用 DPS 檔")
+    log(f"  成功併入        ：{len(info['sources'])} 份")
+    for detail in info["source_details"]:
+        log(
+            f"      - {detail['source'].name}；sheet={detail['source_sheet']}；"
+            f"料號欄={detail['part_number_header']}；"
+            f"日期={detail['date_range'][0]} ~ {detail['date_range'][1]}"
+        )
+    if info["skipped"]:
+        log(f"  已略過          ：{len(info['skipped'])} 份")
+        for path, reason in info["skipped"]:
+            log(f"      - {path.name}：{reason}")
+    log(f"  日期欄          ：{info['date_columns']} 欄 / {info['dates']} 個日期"
+        f"（{info['date_range'][0]} ~ {info['date_range'][1]}，同料號同日期累加）")
+    if info["tail_cutoff"]:
+        log(f"  末欄彙總桶      ：{info['tail_cutoff']} 起之日期併入同一欄")
+    else:
+        log("  末欄彙總桶      ：未使用，每個日期各自成欄")
+    log(f"  輸出            ：{info['rows']} 列 x {info['out_columns']} 個日期欄，"
+        f"合計 {info['grand_total']:,} pcs")
+    if info["excluded"]:
+        total = clean_number(sum(info["excluded"].values()))
+        log(f"  已排除 * 料號   ：{len(info['excluded'])} 個，合計 {total:,} pcs"
+            f"（用 --include-star-parts 可保留）")
+    if info["text_cells"]:
+        log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
+    log("  輸出格式        ：文字")
+    log(f"  產出檔          ：{dps_out}")
+
+
+def run_dps_report(args, context: RunContext, progress: Progress | None = None) -> dict:
     last_error = None
-    dps_out = args.out_dir / f"{DPS_TIDY_SHEET}.xlsx"
+    dps_out = context.out_dir / f"{DPS_TIDY_SHEET}.xlsx"
+    title = f"{context.label} DPS" if context.name else "DPS"
+    context.out_dir.mkdir(parents=True, exist_ok=True)
     if progress is not None:
-        progress.step("DPS: 檢查來源")
+        progress.step(f"{title}: 檢查來源")
     output_step_done = False
     try:
-        paths = candidate_paths(args.dps, args.input_dir, [r"DPS"], "DPS")
+        multiple_action = (
+            "將全部合併；格式不符者會略過。"
+            if context.dps_mode == "merge_all"
+            else "將依修改時間由新到舊嘗試。"
+        )
+        paths = candidate_paths(args.dps, context.input_dir, [r"DPS"], title, multiple_action)
     except (SystemExit, Exception) as exc:  # noqa: BLE001 - 找不到候選檔也只略過 DPS
         last_error = exc
-        warn(f"DPS 無法產出，已略過。原因：{_error_message(exc)}")
+        warn(f"{title} 無法產出，已略過。原因：{_error_message(exc)}")
         paths = []
+    if context.dps_mode == "merge_all" and paths:
+        try:
+            cutoff = resolve_dps_tail_cutoff_for_paths(
+                paths,
+                args,
+                sheet_keywords=args.dps_sheet_keywords,
+                part_number_headers=args.dps_part_number_headers,
+            )
+            if progress is not None and not output_step_done:
+                progress.step(f"{title}: 產出報表")
+                output_step_done = True
+            info = generate_merged_dps(
+                paths,
+                dps_out,
+                include_star_parts=args.include_star_parts,
+                tail_cutoff=cutoff,
+                sheet_keywords=args.dps_sheet_keywords,
+                part_number_headers=args.dps_part_number_headers,
+            )
+            log_merged_dps_info(info, dps_out, title)
+            if args.compare:
+                warn(f"{title} 是多檔合併模式，沒有單一人工整理表可逐格對帳，已略過 --compare。")
+            return {
+                "customer": context.name,
+                "kind": "DPS",
+                "ok": True,
+                "source": paths,
+                "output": dps_out,
+            }
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - 合併失敗仍要進摘要
+            last_error = exc
+            warn(f"{title} 無法產出，已略過。原因：{_error_message(exc)}")
+            paths = []
+
     for dps_path in paths:
         try:
             if not dps_path.is_file():
@@ -165,7 +398,7 @@ def run_dps_report(args, progress: Progress | None = None) -> dict:
                 part_number_headers=args.dps_part_number_headers,
             )
             if progress is not None and not output_step_done:
-                progress.step("DPS: 產出報表")
+                progress.step(f"{title}: 產出報表")
                 output_step_done = True
             info = generate_dps(
                 dps_path,
@@ -175,44 +408,29 @@ def run_dps_report(args, progress: Progress | None = None) -> dict:
                 sheet_keywords=args.dps_sheet_keywords,
                 part_number_headers=args.dps_part_number_headers,
             )
-            log("\n--- DPS ---")
-            log(f"  來源            ：{info['source'].name}")
-            log(f"  來源工作表      ：{info['source_sheet']}")
-            log(f"  料號欄          ：{info['part_number_header']}")
-            log(f"  表頭列          ：第 {info['header_row']} 列")
-            log(f"  日期欄          ：{info['date_columns']} 欄 / {info['dates']} 個日期"
-                f"（{info['date_range'][0]} ~ {info['date_range'][1]}，D+N 兩班合併）")
-            if info["tail_cutoff"]:
-                log(f"  末欄彙總桶      ：{info['tail_cutoff']} 起之日期併入同一欄"
-                    f"（沿用既有整理後版面）")
-            else:
-                log("  末欄彙總桶      ：未使用，每個日期各自成欄")
-            log(f"  輸出            ：{info['rows']} 列 x {info['out_columns']} 個日期欄，"
-                f"合計 {info['grand_total']:,} pcs")
-            if info["excluded"]:
-                total = clean_number(sum(info["excluded"].values()))
-                log(f"  已排除 * 料號   ：{len(info['excluded'])} 個，合計 {total:,} pcs"
-                    f"（用 --include-star-parts 可保留）")
-                for pn, qty in sorted(info["excluded"].items()):
-                    log(f"      - {pn}  {clean_number(qty):,}")
-            if info["text_cells"]:
-                log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
-            log(f"  產出檔          ：{dps_out}")
+            log_single_dps_info(info, dps_out, title)
 
             if args.compare:
                 compare(
                     "DPS", dps_path, DPS_COMPARE_SHEETS, dps_out, DPS_TIDY_SHEET,
                     key_col=1, first_data_col_manual=2, first_data_col_generated=2,
                 )
-            return {"kind": "DPS", "ok": True, "source": dps_path, "output": dps_out}
+            return {
+                "customer": context.name,
+                "kind": "DPS",
+                "ok": True,
+                "source": dps_path,
+                "output": dps_out,
+            }
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一報表失敗要能繼續下一份
             last_error = exc
             warn(f"DPS 來源檔 {dps_path.name} 無法產出，已略過。原因：{_error_message(exc)}")
             if args.dps is not None:
                 break
     if progress is not None and not output_step_done:
-        progress.step("DPS: 略過報表")
+        progress.step(f"{title}: 略過報表")
     return {
+        "customer": context.name,
         "kind": "DPS",
         "ok": False,
         "error": _error_message(last_error) if last_error else "未知錯誤",
@@ -221,17 +439,21 @@ def run_dps_report(args, progress: Progress | None = None) -> dict:
     }
 
 
-def run_pp_report(args, progress: Progress | None = None) -> dict:
+def run_pp_report(args, context: RunContext, progress: Progress | None = None) -> dict:
     last_error = None
-    pp_out = args.out_dir / f"{PP_TIDY_SHEET}.xlsx"
+    pp_out = context.out_dir / f"{PP_TIDY_SHEET}.xlsx"
+    title = f"{context.label} PP" if context.name else "PP"
+    context.out_dir.mkdir(parents=True, exist_ok=True)
+    if context.pp_mode != "first_valid":
+        warn(f"{title} 目前不支援 {context.pp_mode}，已改用 first_valid。")
     if progress is not None:
-        progress.step("PP: 檢查來源")
+        progress.step(f"{title}: 檢查來源")
     output_step_done = False
     try:
-        paths = candidate_paths(args.pp, args.input_dir, [r"\bPP\b", r"PP"], "PP")
+        paths = candidate_paths(args.pp, context.input_dir, [r"\bPP\b", r"PP"], title)
     except (SystemExit, Exception) as exc:  # noqa: BLE001 - 找不到候選檔也只略過 PP
         last_error = exc
-        warn(f"PP 無法產出，已略過。原因：{_error_message(exc)}")
+        warn(f"{title} 無法產出，已略過。原因：{_error_message(exc)}")
         paths = []
     for pp_path in paths:
         try:
@@ -240,7 +462,7 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
 
             start_week = None if args.pp_start_week.lower() == "auto" else int(args.pp_start_week)
             if progress is not None and not output_step_done:
-                progress.step("PP: 產出報表")
+                progress.step(f"{title}: 產出報表")
                 output_step_done = True
             info = generate_pp(
                 pp_path,
@@ -252,7 +474,7 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
                 sheet_keywords=args.pp_sheet_keywords,
                 part_number_keywords=args.pp_part_number_field_keywords,
             )
-            log("\n--- PP ---")
+            log(f"\n--- {title} ---")
             log(f"  來源            ：{info['source'].name}")
             log(f"  版面工作表      ：{info['layout_sheet']}")
             log(f"  樞紐分析表      ：{info['pivot_table'] or '未知'}")
@@ -268,6 +490,7 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
             log(f"  輸出            ：{info['rows']} 列"
                 f"（已略過期間內全為 0 的 {info['dropped_zero']} 個料號），"
                 f"合計 {info['grand_total']:,} pcs")
+            log("  輸出格式        ：文字")
             log(f"  產出檔          ：{pp_out}")
 
             if info["refreshed_date"] and info["refreshed_date"] < dt.date.today() - dt.timedelta(days=45):
@@ -281,15 +504,22 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
                     "PP", pp_path, PP_COMPARE_SHEETS, pp_out, PP_TIDY_SHEET,
                     key_col=2, first_data_col_manual=4, first_data_col_generated=4,
                 )
-            return {"kind": "PP", "ok": True, "source": pp_path, "output": pp_out}
+            return {
+                "customer": context.name,
+                "kind": "PP",
+                "ok": True,
+                "source": pp_path,
+                "output": pp_out,
+            }
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一報表失敗要能繼續下一份
             last_error = exc
             warn(f"PP 來源檔 {pp_path.name} 無法產出，已略過。原因：{_error_message(exc)}")
             if args.pp is not None:
                 break
     if progress is not None and not output_step_done:
-        progress.step("PP: 略過報表")
+        progress.step(f"{title}: 略過報表")
     return {
+        "customer": context.name,
         "kind": "PP",
         "ok": False,
         "error": _error_message(last_error) if last_error else "未知錯誤",
@@ -300,37 +530,58 @@ def run_pp_report(args, progress: Progress | None = None) -> dict:
 
 def run_reports(args) -> bool:
     args.input_dir.mkdir(parents=True, exist_ok=True)
+    contexts = build_run_contexts(args)
+    if contexts:
+        run_log_paths = setup_run_log([context.out_dir for context in contexts])
+    else:
+        run_log_paths = setup_run_log(args.out_dir)
 
     log("=" * 72)
     log("Buyer Reports 產生器")
     log(f"輸入資料夾：{args.input_dir}")
     log(f"輸出資料夾：{args.out_dir}")
-    log(f"執行記錄  ：{args.out_dir / 'run.log'}")
+    log(f"執行記錄  ：{log_path_label(run_log_paths)}")
     config_status = "已讀取" if args.sheet_config_loaded else "未找到，使用內建預設"
     log(f"設定檔    ：{args.sheet_config_path}（{config_status}）")
     log(f"DPS sheet 關鍵字：{keyword_label(args.dps_sheet_keywords)}")
     log(f"PP sheet 關鍵字 ：{keyword_label(args.pp_sheet_keywords)}")
     log(f"DPS 料號欄別名 ：{keyword_label(args.dps_part_number_headers)}")
     log(f"PP 料號欄關鍵字：{keyword_label(args.pp_part_number_field_keywords)}")
+    log("客戶設定        ：" + "、".join(
+        f"{customer['name']}（DPS={customer['dps_mode']}，PP={customer['pp_mode']}）"
+        for customer in args.customers
+    ))
     log("=" * 72)
+    for message in getattr(args, "context_warnings", []):
+        warn(message)
+
+    if not contexts:
+        log("\n找不到任何可處理的 Excel。請把檔案放入 intput/AVTC 或 intput/RAKEN。")
+        return False
+
+    log("本次處理資料夾：")
+    for context in contexts:
+        log(f"  {context.label}：{context.input_dir} → {context.out_dir}")
 
     tasks = []
-    if not args.skip_dps:
-        tasks.append(("DPS", run_dps_report))
-    if not args.skip_pp:
-        tasks.append(("PP", run_pp_report))
+    for context in contexts:
+        if not args.skip_dps:
+            tasks.append((context, "DPS", run_dps_report))
+        if not args.skip_pp:
+            tasks.append((context, "PP", run_pp_report))
 
     results = []
     with Progress(total=len(tasks) * 2) as progress:
-        for _name, runner in tasks:
-            results.append(runner(args, progress))
+        for context, _name, runner in tasks:
+            results.append(runner(args, context, progress))
 
     log("\n--- 執行摘要 ---")
     for result in results:
+        label = f"{result['customer']} {result['kind']}" if result.get("customer") else result["kind"]
         if result["ok"]:
-            log(f"  {result['kind']}：成功 → {result['output']}")
+            log(f"  {label}：成功 → {result['output']}")
         else:
-            log(f"  {result['kind']}：失敗 / 已略過 → {result['error']}")
+            log(f"  {label}：失敗 / 已略過 → {result['error']}")
             if result.get("stale_output"):
                 log(f"      注意：{result['output']} 已存在，可能是前次執行留下的舊檔。")
 
@@ -340,7 +591,7 @@ def run_reports(args) -> bool:
         log("\n沒有啟用任何報表。")
         return True
     if failed:
-        log("[警告] 部分報表未產出，請查看上方警告或 output/run.log。")
+        log("[警告] 部分報表未產出，請查看上方警告或對應 output 子資料夾的 run.log。")
     log("\n完成。")
     return success and not failed
 
@@ -354,7 +605,6 @@ def main() -> int:
     try:
         prevent_temp_execution()
         args.out_dir.mkdir(parents=True, exist_ok=True)
-        setup_run_log(args.out_dir)
         sheet_config = load_sheet_detection_config(root)
         args.sheet_config_path = sheet_config["path"]
         args.sheet_config_loaded = sheet_config["loaded"]
@@ -362,6 +612,7 @@ def main() -> int:
         args.pp_sheet_keywords = sheet_config["pp_sheet_keywords"]
         args.dps_part_number_headers = sheet_config["dps_part_number_headers"]
         args.pp_part_number_field_keywords = sheet_config["pp_part_number_field_keywords"]
+        args.customers = sheet_config["customers"]
         ok = run_reports(args)
         return 0 if ok else 1
     except SystemExit as exc:

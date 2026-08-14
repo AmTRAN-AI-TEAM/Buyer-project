@@ -54,7 +54,11 @@ if errorlevel 1 (
 )
 
 if not exist release\BuyerReports\intput mkdir release\BuyerReports\intput
+if not exist release\BuyerReports\intput\AVTC mkdir release\BuyerReports\intput\AVTC
+if not exist release\BuyerReports\intput\RAKEN mkdir release\BuyerReports\intput\RAKEN
 if not exist release\BuyerReports\output mkdir release\BuyerReports\output
+if not exist release\BuyerReports\output\AVTC mkdir release\BuyerReports\output\AVTC
+if not exist release\BuyerReports\output\RAKEN mkdir release\BuyerReports\output\RAKEN
 copy /Y "Windows執行檔(exe)使用說明.txt" "release\BuyerReports\Windows執行檔(exe)使用說明.txt" >nul
 copy /Y "buyer_reports.ini" "release\BuyerReports\buyer_reports.ini" >nul
 

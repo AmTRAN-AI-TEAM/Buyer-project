@@ -2,6 +2,8 @@
 
 由 **DPS 來源工作表** 與 **PP 樞紐快取** 自動生成「整理後」報表。
 數值一律以原始檔為唯一來源，人工整理版只在 `--compare` 模式下用來對帳。
+目前支援 AVTC / RAKEN 兩組輸入資料夾；RAKEN 的 DPS 會合併多份 DPS 檔，
+同料號同日期累加。
 
 ## 資料整理規則與前置條件
 
@@ -13,6 +15,7 @@
 4. 正常格式下，每個日期應該有兩欄，也就是 `D` / `N` 兩班。程式預設會把同一天的欄位加總。
 5. 料號欄預設可使用 `AVTC P/N`、`P/N` 或 `Model`。
 6. 料號結尾帶 `*` 的資料預設會被排除。
+7. AVTC DPS 維持「第一份格式正確檔案」的原本邏輯；RAKEN DPS 會合併資料夾內所有格式正確的 DPS 檔。
 
 ### PP
 
@@ -39,11 +42,19 @@ buyer-reports/
 │   ├── compare.py              # 對帳工具
 │   └── runner.py               # CLI、找檔與執行流程
 ├── intput/                     # 輸入：把來源 Excel 放這裡
-│   ├── TV DPS Jul 31-Ver 2.xlsx
-│   └── AVTC TV MNT VC PP 20260730 update (002).xlsx
+│   ├── AVTC/
+│   │   ├── AVTC 的 DPS 檔
+│   │   └── AVTC 的 PP 檔
+│   └── RAKEN/
+│       ├── RAKEN 的 DPS 檔，可放多份
+│       └── RAKEN 的 PP 檔
 ├── output/                     # 輸出：執行時自動建立（已列入 .gitignore）
-│   ├── DPS整理後.xlsx
-│   └── PP整理後.xlsx
+│   ├── AVTC/
+│   │   ├── DPS整理後.xlsx
+│   │   └── PP整理後.xlsx
+│   └── RAKEN/
+│       ├── DPS整理後.xlsx
+│       └── PP整理後.xlsx
 ├── requirements.txt
 ├── Windows執行檔(exe)使用說明.txt
 └── README.md
@@ -54,17 +65,19 @@ buyer-reports/
 ```bash
 pip install -r requirements.txt
 
-# 最常用：自動抓 intput/ 下的檔案，產出到 output/
+# 最常用：自動抓 intput/AVTC、intput/RAKEN 下的檔案，產出到 output/
 python generate_buyer_reports.py
 
 # 產出後順便跟來源檔內既有的人工整理版逐格對帳
 python generate_buyer_reports.py --compare
 ```
 
-輸入檔以檔名關鍵字自動辨識（含 `DPS` → DPS 檔，含 `PP` → PP 檔）；
-同類有多個檔案時會依修改時間由新到舊嘗試，格式不符的檔案會被略過並列出警告。
+輸入檔以檔名關鍵字自動辨識（含 `DPS` → DPS 檔，含 `PP` → PP 檔）。
+AVTC 同類有多個檔案時會依修改時間由新到舊嘗試，第一份格式正確者產出；
+RAKEN DPS 會把所有格式正確的 DPS 檔合併，格式不符的檔案會被略過並列出警告。
 也可用 `--dps` / `--pp` 明確指定。
-每次執行都會寫入 `output/run.log`，方便回查成功訊息或錯誤原因。
+每次執行都會在本次處理的客戶輸出資料夾寫入 `run.log`，例如
+`output/RAKEN/run.log`，方便回查成功訊息或錯誤原因。
 
 ## 偵測關鍵字設定
 
@@ -84,6 +97,17 @@ part_number_headers = AVTC P/N, P/N, Model
 
 [pp]
 part_number_field_keywords = Part Number
+
+[customers]
+names = AVTC, RAKEN
+
+[customer.AVTC]
+dps_mode = first_valid
+pp_mode = first_valid
+
+[customer.RAKEN]
+dps_mode = merge_all
+pp_mode = first_valid
 ```
 
 未來若 PP sheet 又有新命名，例如 `Pivot`，或 DPS 料號欄又有新表頭，可直接改成：
@@ -97,6 +121,8 @@ part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 ```
 
 Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需要重新 build。
+其中 `dps_mode = first_valid` 代表取第一份格式正確的 DPS，`dps_mode = merge_all`
+代表合併該客戶資料夾內所有格式正確的 DPS。
 
 ## Windows 執行檔
 
@@ -108,12 +134,17 @@ BuyerReports/
 ├── _internal/
 ├── buyer_reports.ini
 ├── intput/
+│   ├── AVTC/
+│   └── RAKEN/
 ├── output/
+│   ├── AVTC/
+│   └── RAKEN/
 └── Windows執行檔(exe)使用說明.txt
 ```
 
-使用者只要把 DPS / PP Excel 放進 `intput/`，再雙擊 `BuyerReports.exe`，
-完成後到 `output/` 取得 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
+使用者只要把 AVTC 檔案放進 `intput/AVTC/`、RAKEN 檔案放進 `intput/RAKEN/`，
+再雙擊 `BuyerReports.exe`。完成後到 `output/AVTC/`、`output/RAKEN/`
+取得各自的 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
 exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用；
 請務必先完整解壓縮，不要在 zip 壓縮檔視窗內直接執行。
 若 SmartScreen 顯示「Windows 已保護你的電腦」，請確認來源可信後點
@@ -144,7 +175,8 @@ build_exe.bat
 | 列標籤 | 使用選定的 DPS 料號欄；料號結尾帶 `*` 者預設會被排除（與人工整理一致，可用 `--include-star-parts` 保留） |
 | 排序 | 模擬 Excel 樞紐：數字型標籤在前（依數值），文字型在後 |
 | 空值 | 數量為 0 時留白，不填 0（與人工版一致） |
-| total | 寫成 `=SUM(...)` 公式 |
+| total | 由程式計算後以文字寫入，不再使用 Excel 公式 |
+| 客戶模式 | AVTC 預設 `first_valid`；RAKEN 預設 `merge_all`，會合併所有可用 DPS 檔，同料號同日期累加 |
 
 **末欄彙總桶**：人工版是 Excel 樞紐日期群組的產物，最後一個日期欄其實是
 「> 前一日」的彙總桶（本次檔案為 `9/4`，等於 9/4~9/26 全部相加）。
@@ -171,6 +203,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | 月小計欄 | 已有週明細的月份，其月欄是小計，不重複輸出 |
 | 年度合計欄 | 略過 |
 | 列序 | 依選定 PP 工作表上的樞紐報表客戶顯示順序，同客戶內依料號排序 |
+| total | 由程式計算後以文字寫入，不再使用 Excel 公式 |
 
 **期間欄怎麼決定的**：程式讀取選定 PP 工作表上描述樞紐版面的那一列
 （`WK27 Jul | WK28 | … | Oct-26 | Nov26FCST | 2026 TOTAL | Jan'27 FCST | …`），
@@ -239,8 +272,9 @@ DPS 完全一致。PP 的 3 處差異均為人工整理疏漏，本工具產出�
 
 ## 版面說明
 
-輸出刻意貼近人工版：DPS 為 72 欄 x（143+1）列、`total` 以 `=SUM()` 公式呈現；
-PP 的 `total` 同樣保留在第 31 欄（AE），前面留 3 個空白欄，與人工版一致。
+輸出刻意貼近人工版，並把標題、料號、數量與 total 都以文字格式寫入；
+DPS / PP 的 `total` 都由程式先算好後寫入，不再依賴 Excel `=SUM()` 公式。
+PP 的 `total` 仍保留在期間欄後方，前面留 3 個空白欄，與人工版一致。
 差別只有一處：PP 的 A/B/C 欄補上了 `Customer` / 選定料號欄 / `Model`
 標題（人工版該三格是空的）。
 
