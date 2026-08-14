@@ -8,6 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import OrderedDict, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -46,6 +47,13 @@ MONTH_ABBR = [
 MONTH_INDEX = {name.lower(): i for i, name in enumerate(MONTH_ABBR, start=1)}
 PP_SOURCE_SHEET_KEYWORDS = DEFAULT_PP_SHEET_KEYWORDS
 PP_PART_NUMBER_FIELD_KEYWORDS = DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS
+
+
+@dataclass(frozen=True)
+class LayoutInfo:
+    labels: list[str] | None
+    customers: list[str]
+    hidden_labels: list[str]
 
 # ---------------------------------------------------------------------------
 # PP：樞紐快取解析
@@ -521,8 +529,14 @@ def build_pp_periods(
             continue
         tokens.append(("other", None, text))
 
-    # 第二輪：從起始週開始輸出，跳過月小計欄與年度合計欄
+    # 第二輪：先補齊同年度、起始週以前的 cache 週欄，再接上版面起始週以後的欄位。
     periods: "OrderedDict[str, list[int]]" = OrderedDict()
+    for week in sorted(
+        week_num for year, week_num in weeks
+        if year == base_year and week_num < start_week
+    ):
+        periods[f"WK{week:02d}"] = list(weeks[(base_year, week)])
+
     started = False
     for kind, key, label in tokens:
         if not started:
@@ -554,26 +568,66 @@ def build_pp_periods(
     return list(periods.items())
 
 
-def read_layout(pp_path: Path, sheet_name: str | None = None) -> tuple[list[str] | None, list[str]]:
-    """回傳 (期間欄位標籤序列, 客戶顯示順序)。"""
+def historical_cache_period_labels(
+    periods: Sequence[tuple[str, list[int]]],
+    start_week: int,
+) -> list[str]:
+    labels = []
+    for label, _source_indexes in periods:
+        m = re.fullmatch(r"WK(\d{2})", label)
+        if m and int(m.group(1)) < start_week:
+            labels.append(label)
+    return labels
+
+
+def total_period_labels(
+    periods: Sequence[tuple[str, list[int]]],
+    start_week: int,
+) -> list[str]:
+    historical_labels = set(historical_cache_period_labels(periods, start_week))
+    return [
+        label
+        for label, _source_indexes in periods
+        if label not in historical_labels
+    ]
+
+
+def output_label_for_layout_period(label: str) -> str | None:
+    text = label.strip()
+    m = WEEK_LABEL_RE.match(text)
+    if m:
+        return f"WK{int(m.group(1)):02d}"
+    if MONTH_FCST_LABEL_RE.match(text) or MONTH_PLAIN_LABEL_RE.match(text):
+        return text
+    return None
+
+
+def read_layout(pp_path: Path, sheet_name: str | None = None) -> LayoutInfo:
+    """回傳期間欄位標籤、客戶顯示順序，並記錄來源被隱藏的期間欄。"""
     wb = load_workbook(pp_path, data_only=True)
     try:
         found = find_layout_row(wb, sheet_name)
         if found is None:
-            return None, []
+            return LayoutInfo(None, [], [])
         ws, row_idx, first_col = found
-        labels = [
-            str(cell.value).strip()
-            for cell in ws[row_idx]
-            if cell.column >= first_col and cell.value is not None and str(cell.value).strip()
-        ]
+        labels = []
+        hidden_labels = []
+        for cell in ws[row_idx]:
+            if cell.column < first_col or cell.value is None:
+                continue
+            text = str(cell.value).strip()
+            if not text:
+                continue
+            labels.append(text)
+            if ws.column_dimensions[get_column_letter(cell.column)].hidden:
+                hidden_labels.append(text)
         customers: list[str] = []
         for row in ws.iter_rows(min_row=row_idx + 1, max_col=max(1, first_col - 1)):
             for cell in row:
                 text = str(cell.value).strip() if cell.value is not None else ""
                 if text and "TTL" not in text.upper() and text not in customers:
                     customers.append(text)
-        return labels, customers
+        return LayoutInfo(labels, customers, hidden_labels)
     finally:
         wb.close()
 
@@ -623,10 +677,15 @@ def generate_pp(
         # 取報表日所在週的前一週開始（與人工整理慣例一致：保留上一週作參照）
         start_week = max(1, report_date.isocalendar()[1] - 1)
 
-    layout_labels, customer_order = read_layout(pp_path, sheet_name=pivot_source["sheet_name"])
-    periods = build_pp_periods(fields, layout_labels, base_year, start_week)
+    layout = read_layout(pp_path, sheet_name=pivot_source["sheet_name"])
+    periods = build_pp_periods(fields, layout.labels, base_year, start_week)
     if not periods:
         raise SystemExit("推導不出任何輸出期間欄位")
+    historical_cache_periods = historical_cache_period_labels(periods, start_week)
+    total_periods = total_period_labels(periods, start_week)
+    if not total_periods:
+        raise SystemExit("推導不出 PP total 的加總期間欄位")
+    total_start_label = total_periods[0]
 
     plans_seen = {r[plan_idx].strip() for r in records if len(r) > plan_idx}
     if plan not in plans_seen:
@@ -659,9 +718,16 @@ def generate_pp(
     labels = [label for label, _ in periods]
     kept = [pn for pn in source_order if any(aggregate[pn][label] for label in labels)]
 
-    rank = {name: i for i, name in enumerate(customer_order)}
+    rank = {name: i for i, name in enumerate(layout.customers)}
     fallback = len(rank)
     kept.sort(key=lambda pn: (rank.get(metadata[pn][0], fallback), metadata[pn][0], pn))
+
+    output_labels = {label for label, _source_indexes in periods}
+    hidden_output_periods = []
+    for source_label in layout.hidden_labels:
+        output_label = output_label_for_layout_period(source_label)
+        if output_label in output_labels and output_label not in hidden_output_periods:
+            hidden_output_periods.append(output_label)
 
     rows = []
     for pn in kept:
@@ -671,12 +737,18 @@ def generate_pp(
             + [clean_number(aggregate[pn][label]) for label in labels]
         )
 
+    total_period_set = set(total_periods)
     write_pp_workbook(
         output_path,
         labels,
         rows,
         part_number_header=part_number_field,
         template_path=pp_path,
+        total_label_indexes=[
+            index for index, label in enumerate(labels)
+            if label in total_period_set
+        ],
+        total_start_label=total_start_label,
     )
 
     return {
@@ -695,11 +767,20 @@ def generate_pp(
         "base_year": base_year,
         "start_week": start_week,
         "report_date": report_date,
-        "layout_found": layout_labels is not None,
+        "layout_found": layout.labels is not None,
+        "historical_cache_periods": historical_cache_periods,
+        "hidden_source_periods": hidden_output_periods,
+        "total_periods": total_periods,
+        "total_start_label": total_start_label,
         "periods": labels,
         "rows": len(rows),
         "dropped_zero": len(metadata) - len(kept),
-        "grand_total": clean_number(sum(sum(r[3:]) for r in rows)),
+        "grand_total": clean_number(
+            sum(
+                sum(aggregate[pn][label] for label in total_periods)
+                for pn in kept
+            )
+        ),
     }
 
 
@@ -714,10 +795,20 @@ def write_pp_workbook(
     rows: Sequence[list],
     part_number_header: str = "AVTC FG Part Number",
     template_path: Path | None = None,
+    total_label_indexes: Sequence[int] | None = None,
+    total_start_label: str | None = None,
 ) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = PP_TIDY_SHEET
+    total_index_set = (
+        set(range(len(labels)))
+        if total_label_indexes is None
+        else set(total_label_indexes)
+    )
+    total_header = "total"
+    if total_start_label:
+        total_header = f"total({total_start_label}起)"
 
     write_text_cell(ws.cell(1, 1), "Customer")
     write_text_cell(ws.cell(1, 2), part_number_header)
@@ -726,7 +817,7 @@ def write_pp_workbook(
         write_text_cell(ws.cell(1, 4 + offset), label)
     last_col = 3 + len(labels)
     total_col = last_col + PP_SPACER_COLS + 1
-    write_text_cell(ws.cell(1, total_col), "total")
+    write_text_cell(ws.cell(1, total_col), total_header)
 
     for r_offset, row in enumerate(rows):
         r = 2 + r_offset
@@ -736,7 +827,8 @@ def write_pp_workbook(
         total_value = 0.0
         for offset, value in enumerate(row[3:]):
             write_text_cell(ws.cell(r, 4 + offset), value)
-            total_value += numeric(value)
+            if offset in total_index_set:
+                total_value += numeric(value)
         write_text_cell(ws.cell(r, total_col), clean_number(total_value))
 
     for cell in ws[1]:
@@ -752,10 +844,16 @@ def write_pp_workbook(
         ws.column_dimensions[get_column_letter(4 + offset)].width = 13.0
     last_row = len(rows) + 1
     apply_pp_layout(ws, template_path, last_col, total_col, last_row)
+    unhide_pp_output_columns(ws, total_col)
     enforce_text_range(ws, last_row, total_col)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
+
+
+def unhide_pp_output_columns(ws, total_col: int) -> None:
+    for col in range(1, total_col + 1):
+        ws.column_dimensions[get_column_letter(col)].hidden = False
 
 
 def apply_pp_layout(

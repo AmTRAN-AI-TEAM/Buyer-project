@@ -485,6 +485,21 @@ def run_pp_report(args, context: RunContext, progress: Progress | None = None) -
             log(f"  報表基準日      ：{info['report_date']}"
                 f"（主年度 20{info['base_year']}，起始週 WK{info['start_week']:02d}）")
             log(f"  欄位版面        ：{'取自可見樞紐報表' if info['layout_found'] else '推導模式'}")
+            if info["historical_cache_periods"]:
+                log(
+                    "  快取補齊歷史週  ："
+                    f"{', '.join(info['historical_cache_periods'])}"
+                    "（起始週以前，整理後已顯示，不納入 total）"
+                )
+            log(
+                "  total 加總範圍  ："
+                f"{info['total_start_label']} 起，共 {len(info['total_periods'])} 欄"
+            )
+            if info["hidden_source_periods"]:
+                log(
+                    "  來源隱藏期間欄  ："
+                    f"{', '.join(info['hidden_source_periods'])}（整理後已顯示）"
+                )
             log(f"  Plan 篩選       ：{info['plan']}（{info['plan_rows']} 筆料號）")
             log(f"  期間欄          ：{len(info['periods'])} 欄 → {', '.join(info['periods'])}")
             log(f"  輸出            ：{info['rows']} 列"

@@ -401,7 +401,8 @@ def first_sheet_matching_keywords(wb, keywords: Sequence[str]):
 
 def find_total_col(ws, header_row: int = 1) -> int | None:
     for cell in ws[header_row]:
-        if cell.value is not None and str(cell.value).strip().lower() == "total":
+        text = str(cell.value).strip().lower() if cell.value is not None else ""
+        if text == "total" or text.startswith("total(") or text.startswith("total（"):
             return cell.column
     return None
 

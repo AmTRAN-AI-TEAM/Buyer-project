@@ -40,7 +40,12 @@ def _load_grid(
             if cell.column < first_data_col or cell.value is None:
                 continue
             text = str(cell.value).strip()
-            if text.lower() == "total":
+            normalized = text.lower()
+            if (
+                normalized == "total"
+                or normalized.startswith("total(")
+                or normalized.startswith("total（")
+            ):
                 continue
             labels[cell.column] = _label_key(cell)
         grid = {}
