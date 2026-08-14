@@ -28,8 +28,16 @@ DEFAULT_DPS_PART_NUMBER_HEADERS = ("AVTC P/N", "P/N", "Model")
 DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS = ("Part Number",)
 DEFAULT_CUSTOMERS = ("AVTC", "RAKEN")
 DEFAULT_CUSTOMER_MODES = {
-    "AVTC": {"dps_mode": "first_valid", "pp_mode": "first_valid"},
-    "RAKEN": {"dps_mode": "merge_all", "pp_mode": "first_valid"},
+    "AVTC": {
+        "dps_mode": "first_valid",
+        "pp_mode": "first_valid",
+        "dps_pp_dps_weeks_ahead": 5,
+    },
+    "RAKEN": {
+        "dps_mode": "merge_all",
+        "pp_mode": "first_valid",
+        "dps_pp_dps_weeks_ahead": 3,
+    },
 }
 VALID_REPORT_MODES = ("first_valid", "merge_all")
 
@@ -127,6 +135,18 @@ def parse_report_mode(value: str, fallback: str, label: str) -> str:
     return mode
 
 
+def parse_positive_int(value: str, fallback: int, label: str) -> int:
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        warn(f"{label} 設定 {value!r} 不是整數，已改用 {fallback}。")
+        return fallback
+    if parsed < 0:
+        warn(f"{label} 設定 {value!r} 小於 0，已改用 {fallback}。")
+        return fallback
+    return parsed
+
+
 def load_sheet_detection_config(root: Path) -> dict:
     config_path = root / CONFIG_FILE_NAME
     result = {
@@ -141,6 +161,9 @@ def load_sheet_detection_config(root: Path) -> dict:
                 "name": name,
                 "dps_mode": DEFAULT_CUSTOMER_MODES[name]["dps_mode"],
                 "pp_mode": DEFAULT_CUSTOMER_MODES[name]["pp_mode"],
+                "dps_pp_dps_weeks_ahead": DEFAULT_CUSTOMER_MODES[name][
+                    "dps_pp_dps_weeks_ahead"
+                ],
             }
             for name in DEFAULT_CUSTOMERS
         ],
@@ -183,11 +206,17 @@ def load_sheet_detection_config(root: Path) -> dict:
     section_map = {section.casefold(): section for section in parser.sections()}
     for name in customer_names:
         defaults = DEFAULT_CUSTOMER_MODES.get(
-            name.upper(), {"dps_mode": "first_valid", "pp_mode": "first_valid"}
+            name.upper(),
+            {
+                "dps_mode": "first_valid",
+                "pp_mode": "first_valid",
+                "dps_pp_dps_weeks_ahead": 5,
+            },
         )
         section = section_map.get(f"customer.{name}".casefold())
         dps_mode = defaults["dps_mode"]
         pp_mode = defaults["pp_mode"]
+        dps_pp_dps_weeks_ahead = defaults["dps_pp_dps_weeks_ahead"]
         if section:
             dps_mode = parse_report_mode(
                 parser.get(section, "dps_mode", fallback=dps_mode),
@@ -199,7 +228,21 @@ def load_sheet_detection_config(root: Path) -> dict:
                 defaults["pp_mode"],
                 f"{name} PP",
             )
-        customers.append({"name": name, "dps_mode": dps_mode, "pp_mode": pp_mode})
+            dps_pp_dps_weeks_ahead = parse_positive_int(
+                parser.get(
+                    section,
+                    "dps_pp_dps_weeks_ahead",
+                    fallback=str(dps_pp_dps_weeks_ahead),
+                ),
+                defaults["dps_pp_dps_weeks_ahead"],
+                f"{name} DPS+PP 的 DPS 週數",
+            )
+        customers.append({
+            "name": name,
+            "dps_mode": dps_mode,
+            "pp_mode": pp_mode,
+            "dps_pp_dps_weeks_ahead": dps_pp_dps_weeks_ahead,
+        })
     if customers:
         result["customers"] = customers
     return result

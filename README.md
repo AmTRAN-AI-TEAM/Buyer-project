@@ -1,6 +1,6 @@
 # Buyer Reports 自動整理工具
 
-由 **DPS 來源工作表** 與 **PP 樞紐快取** 自動生成「整理後」報表。
+由 **DPS 來源工作表** 與 **PP 樞紐快取** 自動生成「整理後」與 `DPS+PP` 報表。
 數值一律以原始檔為唯一來源，人工整理版只在 `--compare` 模式下用來對帳。
 目前支援 AVTC / RAKEN 兩組輸入資料夾；RAKEN 的 DPS 會合併多份 DPS 檔，
 同料號同日期累加。
@@ -30,6 +30,16 @@
 9. 來源樞紐報表中被隱藏的時間欄位也會納入計算，並在整理後檔案中顯示出來。
 10. 沒有週明細的月份會直接以月份欄位作為輸出。
 
+### DPS+PP
+
+1. `DPS+PP.xlsx` 會在同一個客戶資料夾內同時找到 DPS 與 PP 來源後產出。
+2. 週別採 buyer week：週六到週五。例如 `2026-08-08` 到 `2026-08-14` 是 `WK33`。
+3. AVTC 預設 DPS 保留到「目前 buyer week + 5 週」；例如目前 `WK33`，DPS 到 `WK38`，PP 從 `WK39` 開始。
+4. RAKEN 預設 DPS 保留到「目前 buyer week + 3 週」；例如目前 `WK33`，DPS 到 `WK36`，PP 從 `WK37` 開始。
+5. DPS 若在 PP 接續週含之後仍有數字，會併入 DPS 保留週的最後一天。例如 AVTC 的 `WK39` 後數字會併入 `WK38` 最後一天。
+6. PP 接續週開始後的週欄與月 FCST 欄會沿用 PP pivot cache 的數字。
+7. 若來源檔內有 `BOM1` 工作表，程式會用 `BOM1` 的 B 欄料號對應 H 欄 vendor 寫入 `BOM`；若沒有，`BOM` 欄留空。
+
 ## 目錄結構
 
 ```
@@ -41,6 +51,7 @@ buyer-reports/
 │   ├── common.py               # 共用工具、log、Excel helper、Windows exe 判斷
 │   ├── dps.py                  # DPS 解析與輸出
 │   ├── pp.py                   # PP 樞紐快取解析、期間推導與輸出
+│   ├── dps_pp.py               # DPS+PP 整合輸出
 │   ├── compare.py              # 對帳工具
 │   └── runner.py               # CLI、找檔與執行流程
 ├── intput/                     # 輸入：把來源 Excel 放這裡
@@ -53,10 +64,12 @@ buyer-reports/
 ├── output/                     # 輸出：執行時自動建立（已列入 .gitignore）
 │   ├── AVTC/
 │   │   ├── DPS整理後.xlsx
-│   │   └── PP整理後.xlsx
+│   │   ├── PP整理後.xlsx
+│   │   └── DPS+PP.xlsx
 │   └── RAKEN/
 │       ├── DPS整理後.xlsx
-│       └── PP整理後.xlsx
+│       ├── PP整理後.xlsx
+│       └── DPS+PP.xlsx
 ├── requirements.txt
 ├── Windows執行檔(exe)使用說明.txt
 └── README.md
@@ -80,6 +93,7 @@ RAKEN DPS 會把所有格式正確的 DPS 檔合併，格式不符的檔案會�
 也可用 `--dps` / `--pp` 明確指定。
 每次執行都會在本次處理的客戶輸出資料夾寫入 `run.log`，例如
 `output/RAKEN/run.log`，方便回查成功訊息或錯誤原因。
+同一客戶同時有可用 DPS 與 PP 時，還會額外產出 `DPS+PP.xlsx`。
 
 ## 偵測關鍵字設定
 
@@ -106,10 +120,12 @@ names = AVTC, RAKEN
 [customer.AVTC]
 dps_mode = first_valid
 pp_mode = first_valid
+dps_pp_dps_weeks_ahead = 5
 
 [customer.RAKEN]
 dps_mode = merge_all
 pp_mode = first_valid
+dps_pp_dps_weeks_ahead = 3
 ```
 
 未來若 PP sheet 又有新命名，例如 `Pivot`，或 DPS 料號欄又有新表頭，可直接改成：
@@ -125,6 +141,7 @@ part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需要重新 build。
 其中 `dps_mode = first_valid` 代表取第一份格式正確的 DPS，`dps_mode = merge_all`
 代表合併該客戶資料夾內所有格式正確的 DPS。
+`dps_pp_dps_weeks_ahead` 代表 `DPS+PP` 中 DPS 要保留到目前 buyer week 往後幾週。
 
 ## Windows 執行檔
 
@@ -147,6 +164,7 @@ BuyerReports/
 使用者只要把 AVTC 檔案放進 `intput/AVTC/`、RAKEN 檔案放進 `intput/RAKEN/`，
 再雙擊 `BuyerReports.exe`。完成後到 `output/AVTC/`、`output/RAKEN/`
 取得各自的 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
+若 DPS 與 PP 來源都可用，也會產出 `DPS+PP.xlsx`。
 exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用；
 請務必先完整解壓縮，不要在 zip 壓縮檔視窗內直接執行。
 若 SmartScreen 顯示「Windows 已保護你的電腦」，請確認來源可信後點
@@ -221,19 +239,36 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 銜接點，不代表輸出檔第一個 WK 一定從該週開始；報表基準日預設取樞紐快取的
 更新日期。可用 `--pp-start-week` / `--pp-report-date` 覆寫。
 
+### DPS+PP
+
+`DPS+PP.xlsx` 會直接讀取 DPS 原始解析結果與 PP pivot cache，而不是把
+`DPS整理後.xlsx` / `PP整理後.xlsx` 兩個檔案再相加。這樣可以套用整合專用規則：
+
+| 項目 | 規則 |
+|---|---|
+| 週別 | buyer week，週六到週五 |
+| 目前週 | 預設依執行當天推算，可用 `--dps-pp-current-week` 覆寫 |
+| AVTC | DPS 保留到目前週 + 5 週，後續改用 PP |
+| RAKEN | DPS 保留到目前週 + 3 週，後續改用 PP |
+| DPS 後段數字 | 若 DPS 在 PP 接續週含之後仍有數字，併入 DPS 保留週的最後一天 |
+| PP 接續欄 | 只取 cutover 之後的 PP 週欄與月 FCST 欄 |
+| BOM | 若來源檔有 `BOM1`，用 B 欄料號對應 H 欄 vendor；沒有則留空 |
+| total | 由程式加總整份 `DPS+PP` 期間欄，以文字寫入 |
+
 ## 常用參數
 
 | 參數 | 說明 |
 |---|---|
 | `--input-dir` / `--out-dir` | 輸入 / 輸出資料夾 |
 | `--dps` / `--pp` | 明確指定來源檔 |
-| `--skip-dps` / `--skip-pp` | 只跑其中一種報表 |
+| `--skip-dps` / `--skip-pp` / `--skip-dps-pp` | 略過指定報表 |
 | `--include-star-parts` | 保留結尾帶 `*` 的 DPS 料號 |
 | `--dps-tail-cutoff` | `auto` / `none` / `YYYY-MM-DD` |
 | `--pp-plan` | Plan 篩選值，預設 `Production Input` |
 | `--pp-start-week` | `auto` 或週數 |
 | `--pp-base-year` | 主年度兩位數，例 `26` |
 | `--pp-report-date` | 報表基準日 `YYYY-MM-DD` |
+| `--dps-pp-current-week` | `DPS+PP` 目前週：`auto` 或週數 |
 | `--compare` | 與來源檔內的人工整理版逐格對帳 |
 | `--quiet` | 只輸出錯誤訊息 |
 | `--no-pause` | Windows exe 模式下完成後不等待按 Enter |
@@ -268,7 +303,7 @@ DPS 完全一致。PP 的 3 處差異均為人工整理疏漏，本工具產出�
 
 每次執行都會列印：來源檔、實際使用的 DPS / PP 工作表、表頭列、日期欄數與區間、
 被排除的 `*` 料號清單與數量、樞紐快取的更新日期與更新者、Plan 篩選筆數、
-期間欄清單、輸出列數與合計。
+期間欄清單、`DPS+PP` cutover 週、輸出列數與合計。
 另外會在下列情況示警：
 
 - 單一 DPS / PP 來源檔格式錯誤，已略過並嘗試下一個候選檔或下一種報表

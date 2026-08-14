@@ -42,6 +42,7 @@ from .dps import (
     generate_dps,
     generate_merged_dps,
 )
+from .dps_pp import DPS_PP_OUTPUT_NAME, generate_dps_pp
 from .pp import PP_COMPARE_SHEETS, PP_TIDY_SHEET, generate_pp
 
 
@@ -52,6 +53,7 @@ class RunContext:
     out_dir: Path
     dps_mode: str
     pp_mode: str
+    dps_pp_dps_weeks_ahead: int
     legacy: bool = False
 
     @property
@@ -108,6 +110,7 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
                         help="PP 來源檔；省略時於輸入資料夾自動尋找")
     parser.add_argument("--skip-dps", action="store_true", help="不產生 DPS 報表")
     parser.add_argument("--skip-pp", action="store_true", help="不產生 PP 報表")
+    parser.add_argument("--skip-dps-pp", action="store_true", help="不產生 DPS+PP 報表")
 
     parser.add_argument("--include-star-parts", action="store_true",
                         help="保留結尾帶 * 的 DPS 料號（預設排除，與人工整理規則一致）")
@@ -121,6 +124,8 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
                         help="PP 主年度兩位數（例 26）；省略時依報表日判斷")
     parser.add_argument("--pp-report-date", type=parse_date_arg, default=None,
                         help="PP 報表基準日；省略時取樞紐快取的更新日期")
+    parser.add_argument("--dps-pp-current-week", default="auto",
+                        help="DPS+PP 目前週：auto（依執行日推算）或週數")
 
     parser.add_argument("--compare", action="store_true",
                         help="與來源檔內既有的人工整理版逐格對帳並列出差異")
@@ -168,6 +173,7 @@ def build_run_contexts(args) -> list[RunContext]:
                 out_dir=args.out_dir,
                 dps_mode="first_valid",
                 pp_mode="first_valid",
+                dps_pp_dps_weeks_ahead=5,
                 legacy=True,
             )
         ]
@@ -184,6 +190,7 @@ def build_run_contexts(args) -> list[RunContext]:
                 out_dir=args.out_dir / customer["name"],
                 dps_mode=customer["dps_mode"],
                 pp_mode=customer["pp_mode"],
+                dps_pp_dps_weeks_ahead=customer["dps_pp_dps_weeks_ahead"],
             )
         )
 
@@ -205,6 +212,7 @@ def build_run_contexts(args) -> list[RunContext]:
                 out_dir=args.out_dir,
                 dps_mode="first_valid",
                 pp_mode="first_valid",
+                dps_pp_dps_weeks_ahead=5,
                 legacy=True,
             )
         ]
@@ -543,6 +551,143 @@ def run_pp_report(args, context: RunContext, progress: Progress | None = None) -
     }
 
 
+def run_dps_pp_report(args, context: RunContext, progress: Progress | None = None) -> dict:
+    last_error = None
+    out_path = context.out_dir / DPS_PP_OUTPUT_NAME
+    title = f"{context.label} DPS+PP" if context.name else "DPS+PP"
+    context.out_dir.mkdir(parents=True, exist_ok=True)
+    if progress is not None:
+        progress.step(f"{title}: 檢查來源")
+    output_step_done = False
+
+    try:
+        multiple_action = (
+            "DPS+PP 將全部合併；格式不符者會略過。"
+            if context.dps_mode == "merge_all"
+            else "DPS+PP 將依修改時間由新到舊嘗試。"
+        )
+        dps_paths = candidate_paths(args.dps, context.input_dir, [r"DPS"], title, multiple_action)
+        pp_paths = candidate_paths(args.pp, context.input_dir, [r"\bPP\b", r"PP"], title)
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - 找不到候選檔也只略過 DPS+PP
+        last_error = exc
+        warn(f"{title} 無法產出，已略過。原因：{_error_message(exc)}")
+        dps_paths = []
+        pp_paths = []
+
+    try:
+        current_week = (
+            None
+            if args.dps_pp_current_week.lower() == "auto"
+            else int(args.dps_pp_current_week)
+        )
+    except ValueError as exc:
+        warn(f"{title} 無法產出，已略過。原因：DPS+PP 目前週必須是 auto 或週數。")
+        return {
+            "customer": context.name,
+            "kind": "DPS+PP",
+            "ok": False,
+            "error": str(exc),
+            "output": out_path,
+            "stale_output": out_path.exists(),
+        }
+
+    for pp_path in pp_paths:
+        try:
+            if progress is not None and not output_step_done:
+                progress.step(f"{title}: 產出報表")
+                output_step_done = True
+            start_week = None if args.pp_start_week.lower() == "auto" else int(args.pp_start_week)
+            info = generate_dps_pp(
+                dps_paths,
+                pp_path,
+                out_path,
+                dps_mode=context.dps_mode,
+                dps_weeks_ahead=context.dps_pp_dps_weeks_ahead,
+                current_week=current_week,
+                include_star_parts=args.include_star_parts,
+                pp_plan=args.pp_plan,
+                pp_start_week=start_week,
+                pp_base_year=args.pp_base_year,
+                pp_report_date=args.pp_report_date,
+                dps_sheet_keywords=args.dps_sheet_keywords,
+                dps_part_number_headers=args.dps_part_number_headers,
+                pp_sheet_keywords=args.pp_sheet_keywords,
+                pp_part_number_keywords=args.pp_part_number_field_keywords,
+            )
+
+            log(f"\n--- {title} ---")
+            log(f"  DPS 來源        ：{len(info['dps_sources'])} 份")
+            for detail in info["dps_source_details"]:
+                log(
+                    f"      - {detail['source'].name}；sheet={detail['source_sheet']}；"
+                    f"料號欄={detail['part_number_header']}；"
+                    f"日期={detail['date_range'][0]} ~ {detail['date_range'][1]}"
+                )
+            if info["skipped_dps"]:
+                log(f"  DPS 已略過      ：{len(info['skipped_dps'])} 份")
+                for path, reason in info["skipped_dps"]:
+                    log(f"      - {path.name}：{reason}")
+            log(f"  PP 來源         ：{info['pp_source'].name}")
+            log(f"  PP 工作表       ：{info['pp_sheet']}；料號欄={info['pp_part_number_field']}")
+            log(f"  PP 樞紐快取     ：{info['pp_cache']}")
+            log(
+                f"  目前週          ：20{info['current_week_year'] % 100:02d} "
+                f"WK{info['current_week']:02d}"
+            )
+            log(
+                f"  DPS 使用範圍    ：到 WK{info['dps_cutoff_week']:02d} "
+                f"({info['dps_cutoff_range'][0]} ~ {info['dps_cutoff_range'][1]})"
+            )
+            log(
+                f"  PP 接續範圍     ：WK{info['pp_start_week']:02d} 起，"
+                f"{len(info['pp_periods'])} 欄 → {', '.join(info['pp_periods'])}"
+            )
+            if info["dps_late_total"]:
+                log(
+                    f"  DPS 後段併入    ：{info['dps_cutoff_range'][1]} 之後合計 "
+                    f"{info['dps_late_total']:,} pcs 已併入該日"
+                )
+            else:
+                log("  DPS 後段併入    ：無")
+            if info["bom_found"]:
+                log(f"  BOM             ：已讀取 BOM1（{info['bom_count']} 個料號）")
+            else:
+                log("  BOM             ：未找到 BOM1，BOM 欄留空")
+            log(
+                f"  輸出            ：{info['rows']} 列，"
+                f"DPS 日期欄 {info['dps_dates']} 欄，"
+                f"PP 期間欄 {len(info['pp_periods'])} 欄，"
+                f"合計 {info['grand_total']:,} pcs"
+            )
+            log("  輸出格式        ：文字")
+            log(f"  產出檔          ：{out_path}")
+            if args.compare:
+                warn(f"{title} 目前沒有單一人工整理表可逐格對帳，已略過 --compare。")
+            return {
+                "customer": context.name,
+                "kind": "DPS+PP",
+                "ok": True,
+                "source": (info["dps_sources"], pp_path),
+                "output": out_path,
+            }
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一 PP 壞檔可嘗試下一個
+            last_error = exc
+            warn(f"DPS+PP 使用 PP 來源檔 {pp_path.name} 無法產出，已略過。原因：{_error_message(exc)}")
+            if args.pp is not None:
+                break
+
+    if progress is not None and not output_step_done:
+        progress.step(f"{title}: 略過報表")
+    return {
+        "customer": context.name,
+        "kind": "DPS+PP",
+        "ok": False,
+        "error": _error_message(last_error) if last_error else "未知錯誤",
+        "output": out_path,
+        "stale_output": out_path.exists(),
+    }
+
+
 def run_reports(args) -> bool:
     args.input_dir.mkdir(parents=True, exist_ok=True)
     contexts = build_run_contexts(args)
@@ -563,7 +708,9 @@ def run_reports(args) -> bool:
     log(f"DPS 料號欄別名 ：{keyword_label(args.dps_part_number_headers)}")
     log(f"PP 料號欄關鍵字：{keyword_label(args.pp_part_number_field_keywords)}")
     log("客戶設定        ：" + "、".join(
-        f"{customer['name']}（DPS={customer['dps_mode']}，PP={customer['pp_mode']}）"
+        f"{customer['name']}（DPS={customer['dps_mode']}，"
+        f"PP={customer['pp_mode']}，"
+        f"DPS+PP 的 DPS 週數=目前週+{customer['dps_pp_dps_weeks_ahead']}）"
         for customer in args.customers
     ))
     log("=" * 72)
@@ -584,6 +731,8 @@ def run_reports(args) -> bool:
             tasks.append((context, "DPS", run_dps_report))
         if not args.skip_pp:
             tasks.append((context, "PP", run_pp_report))
+        if not args.skip_dps and not args.skip_pp and not args.skip_dps_pp:
+            tasks.append((context, "DPS+PP", run_dps_pp_report))
 
     results = []
     with Progress(total=len(tasks) * 2) as progress:

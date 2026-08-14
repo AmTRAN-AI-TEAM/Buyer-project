@@ -24,6 +24,14 @@ PP：
 9. 來源樞紐報表中被隱藏的時間欄位也會納入計算，並在整理後檔案中顯示出來。
 10. 沒有週明細的月份會直接以月份欄位作為輸出。
 
+DPS+PP：
+1. 同一個客戶資料夾內 DPS 與 PP 都能成功讀取時，會額外產出 DPS+PP.xlsx。
+2. 週別採 buyer week：週六到週五。例如 2026-08-08 到 2026-08-14 是 WK33。
+3. AVTC 預設 DPS 保留到目前 buyer week + 5 週；例如目前 WK33，DPS 到 WK38，PP 從 WK39 開始。
+4. RAKEN 預設 DPS 保留到目前 buyer week + 3 週；例如目前 WK33，DPS 到 WK36，PP 從 WK37 開始。
+5. DPS 若在 PP 接續週含之後仍有數字，會併入 DPS 保留週的最後一天。
+6. 若來源檔內有 BOM1 工作表，程式會用 BOM1 的 B 欄料號對應 H 欄 vendor 寫入 BOM；若沒有，BOM 欄留空。
+
 二、資料夾結構
 
 請保持整個 BuyerReports 資料夾放在一起，不要只單獨移動 exe。
@@ -66,8 +74,10 @@ BuyerReports/
 6. 執行完成後，到對應 output 資料夾取得：
    - output/AVTC/DPS整理後.xlsx
    - output/AVTC/PP整理後.xlsx
+   - output/AVTC/DPS+PP.xlsx
    - output/RAKEN/DPS整理後.xlsx
    - output/RAKEN/PP整理後.xlsx
+   - output/RAKEN/DPS+PP.xlsx
    實際會產出哪些檔案，取決於該客戶資料夾內是否有對應來源檔。
 
 7. 每次執行都會在對應的客戶 output 資料夾產生 run.log，例如 output/RAKEN/run.log。
@@ -95,10 +105,12 @@ names = AVTC, RAKEN
 [customer.AVTC]
 dps_mode = first_valid
 pp_mode = first_valid
+dps_pp_dps_weeks_ahead = 5
 
 [customer.RAKEN]
 dps_mode = merge_all
 pp_mode = first_valid
+dps_pp_dps_weeks_ahead = 3
 
 若未來 PP 的樞紐分析表 sheet 改成其他命名，例如 Pivot，可改成：
 
@@ -113,8 +125,9 @@ part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 多個關鍵字請用逗號分隔。修改 buyer_reports.ini 後重新雙擊 BuyerReports.exe 即可，不需要重新 build。
 dps_mode = first_valid 代表取第一份格式正確的 DPS。
 dps_mode = merge_all 代表合併該客戶資料夾內所有格式正確的 DPS。
+dps_pp_dps_weeks_ahead 代表 DPS+PP 中 DPS 要保留到目前 buyer week 往後幾週。
 
-輸出檔的標題、料號、數量與 total 會以文字格式寫入；total 由程式先計算好，不使用 Excel 公式。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。
+輸出檔的標題、料號、數量與 total 會以文字格式寫入；total 由程式先計算好，不使用 Excel 公式。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。
 
 五、常見問題
 
