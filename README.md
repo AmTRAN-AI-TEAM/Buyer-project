@@ -34,11 +34,12 @@
 
 1. `DPS+PP.xlsx` 會在同一個客戶資料夾內同時找到 DPS 與 PP 來源後產出。
 2. 週別採 buyer week：週六到週五。例如 `2026-08-08` 到 `2026-08-14` 是 `WK33`。
-3. AVTC 預設 DPS 保留到「目前 buyer week + 5 週」；例如目前 `WK33`，DPS 到 `WK38`，PP 從 `WK39` 開始。
-4. RAKEN 預設 DPS 保留到「目前 buyer week + 3 週」；例如目前 `WK33`，DPS 到 `WK36`，PP 從 `WK37` 開始。
-5. DPS 若在 PP 接續週含之後仍有數字，會併入 DPS 保留週的最後一天。例如 AVTC 的 `WK39` 後數字會併入 `WK38` 最後一天。
-6. PP 接續週開始後的週欄與月 FCST 欄會沿用 PP pivot cache 的數字。
-7. 若來源檔內有 `BOM1` 工作表，程式會用 `BOM1` 的 B 欄料號對應 H 欄 vendor 寫入 `BOM`；若沒有，`BOM` 欄留空。
+3. 自動判斷目前週時，週六到週四用執行日所在 buyer week；週五會提前使用隔天週六的新 buyer week。例如 `2026-08-15` 到 `2026-08-20` 會用 `WK34`，`2026-08-21` 會提前用 `WK35`。
+4. AVTC 預設 DPS 保留「含目前 buyer week 共 5 週」；例如目前 `WK34`，DPS 到 `WK38`，PP 從 `WK39` 開始。
+5. RAKEN 預設 DPS 保留「含目前 buyer week 共 3 週」；例如目前 `WK34`，DPS 到 `WK36`，PP 從 `WK37` 開始。
+6. DPS 若在 PP 接續週含之後仍有數字，會併入 DPS 保留週的最後一天。例如 AVTC 的 `WK39` 後數字會併入 `WK38` 最後一天。
+7. PP 接續週開始後的週欄與月 FCST 欄會沿用 PP pivot cache 的數字。
+8. 若來源檔內有 `BOM1` 工作表，程式會用 `BOM1` 的 B 欄料號對應 H 欄 vendor 寫入 `BOM`；若沒有，`BOM` 欄留空。
 
 ## 目錄結構
 
@@ -151,7 +152,8 @@ Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需�
 就不輸出該列；RAKEN 預設開啟，AVTC 預設關閉。
 `dps_trim_trailing_zero_dates = true` 代表 DPS 輸出只列到最後一個有非 0 數量的日期；
 只會裁掉尾端連續空白日期，中間空白日期仍保留。RAKEN 預設開啟，AVTC 預設關閉。
-`dps_pp_dps_weeks_ahead` 代表 `DPS+PP` 中 DPS 要保留到目前 buyer week 往後幾週。
+`dps_pp_dps_weeks_ahead` 代表 `DPS+PP` 中 DPS 要保留幾週，會包含目前 buyer week；
+目前 buyer week 在自動模式下會套用週五提前使用下一週的規則。
 
 ## Windows 執行檔
 
@@ -258,9 +260,9 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | 項目 | 規則 |
 |---|---|
 | 週別 | buyer week，週六到週五 |
-| 目前週 | 預設依執行當天推算，可用 `--dps-pp-current-week` 覆寫 |
-| AVTC | DPS 保留到目前週 + 5 週，後續改用 PP |
-| RAKEN | DPS 保留到目前週 + 3 週，後續改用 PP |
+| 目前週 | 預設依執行日推算；週六到週四用當週，週五提前用下一週。可用 `--dps-pp-current-week` 覆寫 |
+| AVTC | DPS 保留含目前週共 5 週，後續改用 PP |
+| RAKEN | DPS 保留含目前週共 3 週，後續改用 PP |
 | DPS 後段數字 | 若 DPS 在 PP 接續週含之後仍有數字，併入 DPS 保留週的最後一天 |
 | PP 接續欄 | 只取 cutover 之後的 PP 週欄與月 FCST 欄 |
 | DPS 尾端空白日期 | 若客戶設定啟用 `dps_trim_trailing_zero_dates`，只會裁掉 DPS 日期區段尾端全空日期欄，不會改變 PP 接續週 |
@@ -280,7 +282,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | `--pp-start-week` | `auto` 或週數 |
 | `--pp-base-year` | 主年度兩位數，例 `26` |
 | `--pp-report-date` | 報表基準日 `YYYY-MM-DD` |
-| `--dps-pp-current-week` | `DPS+PP` 目前週：`auto` 或週數 |
+| `--dps-pp-current-week` | `DPS+PP` 目前週：`auto` 或週數；`auto` 時週五提前用下一週 |
 | `--compare` | 與來源檔內的人工整理版逐格對帳 |
 | `--quiet` | 只輸出錯誤訊息 |
 | `--no-pause` | Windows exe 模式下完成後不等待按 Enter |

@@ -261,7 +261,7 @@ def load_sheet_detection_config(root: Path) -> dict:
                     fallback=str(dps_pp_dps_weeks_ahead),
                 ),
                 defaults["dps_pp_dps_weeks_ahead"],
-                f"{name} DPS+PP 的 DPS 週數",
+                f"{name} DPS+PP 的 DPS 保留週數",
             )
             dps_drop_zero_total_rows = parse_bool(
                 parser.get(

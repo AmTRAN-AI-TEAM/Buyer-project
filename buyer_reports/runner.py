@@ -127,7 +127,7 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
     parser.add_argument("--pp-report-date", type=parse_date_arg, default=None,
                         help="PP 報表基準日；省略時取樞紐快取的更新日期")
     parser.add_argument("--dps-pp-current-week", default="auto",
-                        help="DPS+PP 目前週：auto（依執行日推算）或週數")
+                        help="DPS+PP 目前週：auto（依執行日推算；週五提前用下一週）或週數")
 
     parser.add_argument("--compare", action="store_true",
                         help="與來源檔內既有的人工整理版逐格對帳並列出差異")
@@ -677,6 +677,22 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
             log(f"  PP 來源         ：{info['pp_source'].name}")
             log(f"  PP 工作表       ：{info['pp_sheet']}；料號欄={info['pp_part_number_field']}")
             log(f"  PP 樞紐快取     ：{info['pp_cache']}")
+            if info["current_week_auto"]:
+                if info["current_week_base_date"] != info["current_date"]:
+                    log(
+                        f"  第一週起點      ：{info['current_week_range'][0]} "
+                        f"（執行日 {info['current_date']} 為週五，提前使用下一週）"
+                    )
+                else:
+                    log(
+                        f"  第一週起點      ：{info['current_week_range'][0]} "
+                        f"（依執行日 {info['current_date']}）"
+                    )
+            else:
+                log(
+                    f"  第一週起點      ：{info['current_week_range'][0]} "
+                    "（手動指定 --dps-pp-current-week）"
+                )
             log(
                 f"  目前週          ：20{info['current_week_year'] % 100:02d} "
                 f"WK{info['current_week']:02d}"
@@ -757,7 +773,7 @@ def run_reports(args) -> bool:
     log("客戶設定        ：" + "、".join(
         f"{customer['name']}（DPS={customer['dps_mode']}，"
         f"PP={customer['pp_mode']}，"
-        f"DPS+PP 的 DPS 週數=目前週+{customer['dps_pp_dps_weeks_ahead']}，"
+        f"DPS+PP 的 DPS 保留週數=含本週共{customer['dps_pp_dps_weeks_ahead']}週，"
         f"DPS零數量列={'略過' if customer['dps_drop_zero_total_rows'] else '保留'}，"
         f"DPS尾端空白日期={'略過' if customer['dps_trim_trailing_zero_dates'] else '保留'}）"
         for customer in args.customers

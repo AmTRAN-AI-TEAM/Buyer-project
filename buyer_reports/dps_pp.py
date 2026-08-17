@@ -53,6 +53,13 @@ def buyer_week_for_date(date: dt.date) -> tuple[int, int]:
     return iso.year, iso.week
 
 
+def dps_pp_base_date_for_run_date(date: dt.date) -> dt.date:
+    """Return the date used to auto-detect the DPS+PP current week."""
+    if date.weekday() == 4:  # Friday: prepare the report as the next buyer week.
+        return date + dt.timedelta(days=1)
+    return date
+
+
 def buyer_week_range(year: int, week: int) -> tuple[dt.date, dt.date]:
     """Return Saturday-Friday date range for a buyer week."""
     start = dt.date.fromisocalendar(year, week, 1) - dt.timedelta(days=2)
@@ -440,10 +447,19 @@ def generate_dps_pp(
 ) -> dict:
     if current_date is None:
         current_date = dt.date.today()
-    current_year, auto_current_week = buyer_week_for_date(current_date)
+    current_week_auto = current_week is None
+    current_week_base_date = dps_pp_base_date_for_run_date(current_date)
+    current_year, auto_current_week = buyer_week_for_date(current_week_base_date)
     if current_week is None:
         current_week = auto_current_week
-    cutoff_year, cutoff_week = add_buyer_weeks(current_year, current_week, dps_weeks_ahead)
+    else:
+        current_year, _auto_current_week = buyer_week_for_date(current_date)
+    current_week_range = buyer_week_range(current_year, current_week)
+    cutoff_year, cutoff_week = add_buyer_weeks(
+        current_year,
+        current_week,
+        dps_weeks_ahead - 1,
+    )
     cutoff_start, cutoff_end = buyer_week_range(cutoff_year, cutoff_week)
     pp_start_year, pp_start_week_number = buyer_week_for_date(cutoff_end + dt.timedelta(days=1))
 
@@ -502,8 +518,12 @@ def generate_dps_pp(
         "pp_sheet": pp_data["layout_sheet"],
         "pp_cache": pp_data["cache_part"],
         "pp_part_number_field": pp_data["part_number_field"],
+        "current_date": current_date,
+        "current_week_base_date": current_week_base_date,
+        "current_week_auto": current_week_auto,
         "current_week": current_week,
         "current_week_year": current_year,
+        "current_week_range": current_week_range,
         "dps_weeks_ahead": dps_weeks_ahead,
         "dps_cutoff_week": cutoff_week,
         "dps_cutoff_year": cutoff_year,
