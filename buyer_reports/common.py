@@ -32,11 +32,15 @@ DEFAULT_CUSTOMER_MODES = {
         "dps_mode": "first_valid",
         "pp_mode": "first_valid",
         "dps_pp_dps_weeks_ahead": 5,
+        "dps_drop_zero_total_rows": False,
+        "dps_trim_trailing_zero_dates": False,
     },
     "RAKEN": {
         "dps_mode": "merge_all",
         "pp_mode": "first_valid",
         "dps_pp_dps_weeks_ahead": 3,
+        "dps_drop_zero_total_rows": True,
+        "dps_trim_trailing_zero_dates": True,
     },
 }
 VALID_REPORT_MODES = ("first_valid", "merge_all")
@@ -147,6 +151,18 @@ def parse_positive_int(value: str, fallback: int, label: str) -> int:
     return parsed
 
 
+def parse_bool(value: str, fallback: bool, label: str) -> bool:
+    normalized = value.strip().casefold()
+    if not normalized:
+        return fallback
+    if normalized in {"1", "yes", "true", "on", "y"}:
+        return True
+    if normalized in {"0", "no", "false", "off", "n"}:
+        return False
+    warn(f"{label} 設定 {value!r} 不是 true/false，已改用 {fallback}。")
+    return fallback
+
+
 def load_sheet_detection_config(root: Path) -> dict:
     config_path = root / CONFIG_FILE_NAME
     result = {
@@ -163,6 +179,12 @@ def load_sheet_detection_config(root: Path) -> dict:
                 "pp_mode": DEFAULT_CUSTOMER_MODES[name]["pp_mode"],
                 "dps_pp_dps_weeks_ahead": DEFAULT_CUSTOMER_MODES[name][
                     "dps_pp_dps_weeks_ahead"
+                ],
+                "dps_drop_zero_total_rows": DEFAULT_CUSTOMER_MODES[name][
+                    "dps_drop_zero_total_rows"
+                ],
+                "dps_trim_trailing_zero_dates": DEFAULT_CUSTOMER_MODES[name][
+                    "dps_trim_trailing_zero_dates"
                 ],
             }
             for name in DEFAULT_CUSTOMERS
@@ -211,12 +233,16 @@ def load_sheet_detection_config(root: Path) -> dict:
                 "dps_mode": "first_valid",
                 "pp_mode": "first_valid",
                 "dps_pp_dps_weeks_ahead": 5,
+                "dps_drop_zero_total_rows": False,
+                "dps_trim_trailing_zero_dates": False,
             },
         )
         section = section_map.get(f"customer.{name}".casefold())
         dps_mode = defaults["dps_mode"]
         pp_mode = defaults["pp_mode"]
         dps_pp_dps_weeks_ahead = defaults["dps_pp_dps_weeks_ahead"]
+        dps_drop_zero_total_rows = defaults["dps_drop_zero_total_rows"]
+        dps_trim_trailing_zero_dates = defaults["dps_trim_trailing_zero_dates"]
         if section:
             dps_mode = parse_report_mode(
                 parser.get(section, "dps_mode", fallback=dps_mode),
@@ -237,11 +263,31 @@ def load_sheet_detection_config(root: Path) -> dict:
                 defaults["dps_pp_dps_weeks_ahead"],
                 f"{name} DPS+PP 的 DPS 週數",
             )
+            dps_drop_zero_total_rows = parse_bool(
+                parser.get(
+                    section,
+                    "dps_drop_zero_total_rows",
+                    fallback=str(dps_drop_zero_total_rows),
+                ),
+                defaults["dps_drop_zero_total_rows"],
+                f"{name} DPS 零數量列略過",
+            )
+            dps_trim_trailing_zero_dates = parse_bool(
+                parser.get(
+                    section,
+                    "dps_trim_trailing_zero_dates",
+                    fallback=str(dps_trim_trailing_zero_dates),
+                ),
+                defaults["dps_trim_trailing_zero_dates"],
+                f"{name} DPS 尾端空白日期欄略過",
+            )
         customers.append({
             "name": name,
             "dps_mode": dps_mode,
             "pp_mode": pp_mode,
             "dps_pp_dps_weeks_ahead": dps_pp_dps_weeks_ahead,
+            "dps_drop_zero_total_rows": dps_drop_zero_total_rows,
+            "dps_trim_trailing_zero_dates": dps_trim_trailing_zero_dates,
         })
     if customers:
         result["customers"] = customers

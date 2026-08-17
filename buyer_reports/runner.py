@@ -54,6 +54,8 @@ class RunContext:
     dps_mode: str
     pp_mode: str
     dps_pp_dps_weeks_ahead: int
+    dps_drop_zero_total_rows: bool
+    dps_trim_trailing_zero_dates: bool
     legacy: bool = False
 
     @property
@@ -174,6 +176,8 @@ def build_run_contexts(args) -> list[RunContext]:
                 dps_mode="first_valid",
                 pp_mode="first_valid",
                 dps_pp_dps_weeks_ahead=5,
+                dps_drop_zero_total_rows=False,
+                dps_trim_trailing_zero_dates=False,
                 legacy=True,
             )
         ]
@@ -191,6 +195,8 @@ def build_run_contexts(args) -> list[RunContext]:
                 dps_mode=customer["dps_mode"],
                 pp_mode=customer["pp_mode"],
                 dps_pp_dps_weeks_ahead=customer["dps_pp_dps_weeks_ahead"],
+                dps_drop_zero_total_rows=customer["dps_drop_zero_total_rows"],
+                dps_trim_trailing_zero_dates=customer["dps_trim_trailing_zero_dates"],
             )
         )
 
@@ -213,6 +219,8 @@ def build_run_contexts(args) -> list[RunContext]:
                 dps_mode="first_valid",
                 pp_mode="first_valid",
                 dps_pp_dps_weeks_ahead=5,
+                dps_drop_zero_total_rows=False,
+                dps_trim_trailing_zero_dates=False,
                 legacy=True,
             )
         ]
@@ -222,6 +230,30 @@ def build_run_contexts(args) -> list[RunContext]:
 
 def log_path_label(paths: Sequence[Path]) -> str:
     return "、".join(str(path) for path in paths)
+
+
+def log_dropped_zero_dps_rows(rows: Sequence[dict]) -> None:
+    if not rows:
+        return
+    log(f"  已略過 0 數量 DPS 列：{len(rows)} 列")
+    for item in rows[:20]:
+        source = item.get("source")
+        source_name = source.name if isinstance(source, Path) else str(source)
+        log(f"      - {source_name} row {item['row']}：{item['part_number']}")
+    if len(rows) > 20:
+        log(f"      ...（其餘 {len(rows) - 20} 列省略）")
+
+
+def log_trimmed_trailing_zero_dates(dates: Sequence[dt.date], label: str = "DPS") -> None:
+    if not dates:
+        return
+    if len(dates) == 1:
+        log(f"  {label} 尾端空白日期欄：已略過 1 欄（{dates[0]}）")
+    else:
+        log(
+            f"  {label} 尾端空白日期欄：已略過 {len(dates)} 欄"
+            f"（{dates[0]} ~ {dates[-1]}）"
+        )
 
 
 def resolve_dps_tail_cutoff(
@@ -305,6 +337,8 @@ def log_single_dps_info(info: dict, dps_out: Path, title: str) -> None:
             log(f"      - {pn}  {clean_number(qty):,}")
     if info["text_cells"]:
         log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
+    log_dropped_zero_dps_rows(info.get("dropped_zero_rows", []))
+    log_trimmed_trailing_zero_dates(info.get("trimmed_trailing_zero_dates", []))
     log("  輸出格式        ：料號文字；數據與 total 為數值")
     log(f"  產出檔          ：{dps_out}")
 
@@ -337,6 +371,8 @@ def log_merged_dps_info(info: dict, dps_out: Path, title: str) -> None:
             f"（用 --include-star-parts 可保留）")
     if info["text_cells"]:
         log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
+    log_dropped_zero_dps_rows(info.get("dropped_zero_rows", []))
+    log_trimmed_trailing_zero_dates(info.get("trimmed_trailing_zero_dates", []))
     log("  輸出格式        ：料號文字；數據與 total 為數值")
     log(f"  產出檔          ：{dps_out}")
 
@@ -378,6 +414,8 @@ def run_dps_report(args, context: RunContext, progress: Progress | None = None) 
                 tail_cutoff=cutoff,
                 sheet_keywords=args.dps_sheet_keywords,
                 part_number_headers=args.dps_part_number_headers,
+                drop_zero_total_rows=context.dps_drop_zero_total_rows,
+                trim_trailing_zero_date_columns=context.dps_trim_trailing_zero_dates,
             )
             log_merged_dps_info(info, dps_out, title)
             if args.compare:
@@ -415,6 +453,8 @@ def run_dps_report(args, context: RunContext, progress: Progress | None = None) 
                 tail_cutoff=cutoff,
                 sheet_keywords=args.dps_sheet_keywords,
                 part_number_headers=args.dps_part_number_headers,
+                drop_zero_total_rows=context.dps_drop_zero_total_rows,
+                trim_trailing_zero_date_columns=context.dps_trim_trailing_zero_dates,
             )
             log_single_dps_info(info, dps_out, title)
 
@@ -613,6 +653,8 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
                 dps_part_number_headers=args.dps_part_number_headers,
                 pp_sheet_keywords=args.pp_sheet_keywords,
                 pp_part_number_keywords=args.pp_part_number_field_keywords,
+                drop_zero_total_rows=context.dps_drop_zero_total_rows,
+                trim_trailing_zero_date_columns=context.dps_trim_trailing_zero_dates,
             )
 
             log(f"\n--- {title} ---")
@@ -627,6 +669,11 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
                 log(f"  DPS 已略過      ：{len(info['skipped_dps'])} 份")
                 for path, reason in info["skipped_dps"]:
                     log(f"      - {path.name}：{reason}")
+            log_dropped_zero_dps_rows(info.get("dps_dropped_zero_rows", []))
+            log_trimmed_trailing_zero_dates(
+                info.get("dps_trimmed_trailing_zero_dates", []),
+                label="DPS+PP 的 DPS 區段",
+            )
             log(f"  PP 來源         ：{info['pp_source'].name}")
             log(f"  PP 工作表       ：{info['pp_sheet']}；料號欄={info['pp_part_number_field']}")
             log(f"  PP 樞紐快取     ：{info['pp_cache']}")
@@ -710,7 +757,9 @@ def run_reports(args) -> bool:
     log("客戶設定        ：" + "、".join(
         f"{customer['name']}（DPS={customer['dps_mode']}，"
         f"PP={customer['pp_mode']}，"
-        f"DPS+PP 的 DPS 週數=目前週+{customer['dps_pp_dps_weeks_ahead']}）"
+        f"DPS+PP 的 DPS 週數=目前週+{customer['dps_pp_dps_weeks_ahead']}，"
+        f"DPS零數量列={'略過' if customer['dps_drop_zero_total_rows'] else '保留'}，"
+        f"DPS尾端空白日期={'略過' if customer['dps_trim_trailing_zero_dates'] else '保留'}）"
         for customer in args.customers
     ))
     log("=" * 72)

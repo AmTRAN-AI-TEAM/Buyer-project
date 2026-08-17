@@ -120,6 +120,7 @@ def read_dps_sources(
     include_star_parts: bool,
     sheet_keywords: Sequence[str],
     part_number_headers: Sequence[str],
+    drop_zero_total_rows: bool = False,
 ) -> tuple[dict, list[tuple[Path, str]]]:
     items = []
     skipped = []
@@ -130,6 +131,7 @@ def read_dps_sources(
                 include_star_parts=include_star_parts,
                 sheet_keywords=sheet_keywords,
                 part_number_headers=part_number_headers,
+                drop_zero_total_rows=drop_zero_total_rows,
             )
             items.append(item)
             if dps_mode != "merge_all":
@@ -251,6 +253,22 @@ def build_dps_buckets(data: dict, cutoff_end: dt.date) -> tuple[list[dt.date], d
                 late_total += qty
 
     return sorted(out_dates), values, late_total
+
+
+def trim_dps_bucket_dates(
+    dates: Sequence[dt.date],
+    values: dict[str, dict[dt.date, float]],
+) -> tuple[list[dt.date], list[dt.date]]:
+    last_nonzero_index = None
+    for index, date in enumerate(dates):
+        if any(by_date.get(date, 0.0) for by_date in values.values()):
+            last_nonzero_index = index
+
+    if last_nonzero_index is None:
+        return list(dates), []
+    kept = list(dates[:last_nonzero_index + 1])
+    trimmed = list(dates[last_nonzero_index + 1:])
+    return kept, trimmed
 
 
 def select_pp_periods(pp_data: dict, cutoff_end: dt.date) -> list[dict]:
@@ -417,6 +435,8 @@ def generate_dps_pp(
     dps_part_number_headers: Sequence[str] = DEFAULT_DPS_PART_NUMBER_HEADERS,
     pp_sheet_keywords: Sequence[str] = DEFAULT_PP_SHEET_KEYWORDS,
     pp_part_number_keywords: Sequence[str] = DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
+    drop_zero_total_rows: bool = False,
+    trim_trailing_zero_date_columns: bool = False,
 ) -> dict:
     if current_date is None:
         current_date = dt.date.today()
@@ -433,6 +453,7 @@ def generate_dps_pp(
         include_star_parts=include_star_parts,
         sheet_keywords=dps_sheet_keywords,
         part_number_headers=dps_part_number_headers,
+        drop_zero_total_rows=drop_zero_total_rows,
     )
     pp_data = read_pp_plan_data(
         pp_path,
@@ -445,6 +466,12 @@ def generate_dps_pp(
     )
 
     dps_dates, dps_values, dps_late_total = build_dps_buckets(dps_data, cutoff_end)
+    dps_trimmed_trailing_zero_dates = []
+    if trim_trailing_zero_date_columns:
+        dps_dates, dps_trimmed_trailing_zero_dates = trim_dps_bucket_dates(
+            dps_dates,
+            dps_values,
+        )
     pp_periods = select_pp_periods(pp_data, cutoff_end)
     if not pp_periods:
         raise SystemExit(
@@ -465,10 +492,12 @@ def generate_dps_pp(
                 "source_sheet": item["source_sheet"],
                 "part_number_header": item["part_number_header"],
                 "date_range": item["date_range"],
+                "dropped_zero_rows": item["dropped_zero_rows"],
             }
             for item in dps_data["sources"]
         ],
         "skipped_dps": skipped_dps,
+        "dps_dropped_zero_rows": dps_data["dropped_zero_rows"],
         "pp_source": pp_path,
         "pp_sheet": pp_data["layout_sheet"],
         "pp_cache": pp_data["cache_part"],
@@ -482,6 +511,7 @@ def generate_dps_pp(
         "pp_start_week": pp_start_week_number,
         "pp_start_year": pp_start_year,
         "dps_dates": len(dps_dates),
+        "dps_trimmed_trailing_zero_dates": dps_trimmed_trailing_zero_dates,
         "pp_periods": [period["label"] for period in pp_periods],
         "dps_late_total": clean_number(dps_late_total),
         "rows": len(rows),

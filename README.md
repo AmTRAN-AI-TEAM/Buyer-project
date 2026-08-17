@@ -102,6 +102,8 @@ RAKEN DPS 會把所有格式正確的 DPS 檔合併，格式不符的檔案會�
 `Data` 且含樞紐分析表的 sheet。DPS 料號欄可接受 `AVTC P/N`、`P/N`、`Model`，
 PP 樞紐快取的料號欄會抓名稱包含 `Part Number` 的欄位；若有多個符合欄位，
 會優先選擇包含 `FG` 的欄位。
+RAKEN 預設會略過 DPS 中日期數量全為 0 的列，避免尾端備註或簽核文字被當成料號；
+同時只輸出到最後一個有數量的日期，尾端全空日期欄會被略過。
 
 ```ini
 [sheet_detection]
@@ -120,11 +122,15 @@ names = AVTC, RAKEN
 [customer.AVTC]
 dps_mode = first_valid
 pp_mode = first_valid
+dps_drop_zero_total_rows = false
+dps_trim_trailing_zero_dates = false
 dps_pp_dps_weeks_ahead = 5
 
 [customer.RAKEN]
 dps_mode = merge_all
 pp_mode = first_valid
+dps_drop_zero_total_rows = true
+dps_trim_trailing_zero_dates = true
 dps_pp_dps_weeks_ahead = 3
 ```
 
@@ -141,6 +147,10 @@ part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需要重新 build。
 其中 `dps_mode = first_valid` 代表取第一份格式正確的 DPS，`dps_mode = merge_all`
 代表合併該客戶資料夾內所有格式正確的 DPS。
+`dps_drop_zero_total_rows = true` 代表 DPS 來源列若所有日期欄都沒有非 0 數量，
+就不輸出該列；RAKEN 預設開啟，AVTC 預設關閉。
+`dps_trim_trailing_zero_dates = true` 代表 DPS 輸出只列到最後一個有非 0 數量的日期；
+只會裁掉尾端連續空白日期，中間空白日期仍保留。RAKEN 預設開啟，AVTC 預設關閉。
 `dps_pp_dps_weeks_ahead` 代表 `DPS+PP` 中 DPS 要保留到目前 buyer week 往後幾週。
 
 ## Windows 執行檔
@@ -195,8 +205,9 @@ build_exe.bat
 | 列標籤 | 使用選定的 DPS 料號欄；料號結尾帶 `*` 者預設會被排除（與人工整理一致，可用 `--include-star-parts` 保留） |
 | 排序 | 模擬 Excel 樞紐：數字型標籤在前（依數值），文字型在後 |
 | 空值 | 數量為 0 時留白，不填 0（與人工版一致） |
+| 尾端空白日期 | 可由 `dps_trim_trailing_zero_dates` 控制；RAKEN 預設略過最後有數量日期之後的全空日期欄 |
 | total | 由程式計算後以數值寫入，不再使用 Excel 公式 |
-| 客戶模式 | AVTC 預設 `first_valid`；RAKEN 預設 `merge_all`，會合併所有可用 DPS 檔，同料號同日期累加 |
+| 客戶模式 | AVTC 預設 `first_valid` 且保留 0 數量列；RAKEN 預設 `merge_all`，會合併所有可用 DPS 檔，同料號同日期累加，並略過日期數量全為 0 的列 |
 
 **末欄彙總桶**：人工版是 Excel 樞紐日期群組的產物，最後一個日期欄其實是
 「> 前一日」的彙總桶（本次檔案為 `9/4`，等於 9/4~9/26 全部相加）。
@@ -252,6 +263,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | RAKEN | DPS 保留到目前週 + 3 週，後續改用 PP |
 | DPS 後段數字 | 若 DPS 在 PP 接續週含之後仍有數字，併入 DPS 保留週的最後一天 |
 | PP 接續欄 | 只取 cutover 之後的 PP 週欄與月 FCST 欄 |
+| DPS 尾端空白日期 | 若客戶設定啟用 `dps_trim_trailing_zero_dates`，只會裁掉 DPS 日期區段尾端全空日期欄，不會改變 PP 接續週 |
 | BOM | 若來源檔有 `BOM1`，用 B 欄料號對應 H 欄 vendor；沒有則留空 |
 | total | 由程式加總整份 `DPS+PP` 期間欄，以數值寫入 |
 

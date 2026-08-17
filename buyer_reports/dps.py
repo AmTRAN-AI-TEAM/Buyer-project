@@ -108,6 +108,7 @@ def read_dps_data(
     include_star_parts: bool = False,
     sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
     part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
+    drop_zero_total_rows: bool = False,
 ) -> dict:
     wb = load_workbook(dps_path, data_only=True)
     try:
@@ -142,14 +143,17 @@ def read_dps_data(
         excluded: dict[str, float] = defaultdict(float)
         text_cells = 0
         orphan_cols: set[int] = set()
+        dropped_zero_rows: list[dict] = []
 
-        for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        for row_num, row in enumerate(
+            ws.iter_rows(min_row=header_row + 1, values_only=True),
+            start=header_row + 1,
+        ):
             raw_pn = row[pn_col - 1] if pn_col - 1 < len(row) else None
             if raw_pn is None or not str(raw_pn).strip():
                 continue
             pn = str(raw_pn).strip()
             is_numeric = isinstance(raw_pn, (int, float)) and not isinstance(raw_pn, bool)
-            label_is_numeric.setdefault(pn, is_numeric)
 
             # 表頭沒被判定成日期、底下卻有數量的欄位 → 可能是漏判的日期欄
             for col_idx in range(first_date_col + 1, len(row) + 1):
@@ -160,6 +164,8 @@ def read_dps_data(
                     orphan_cols.add(col_idx)
 
             row_total = 0.0
+            nonzero_qty_cells = 0
+            row_values: list[tuple[dt.date, float]] = []
             for col_idx, date in date_columns:
                 value = row[col_idx - 1] if col_idx - 1 < len(row) else None
                 if value is None:
@@ -168,8 +174,23 @@ def read_dps_data(
                     if str(value).strip():
                         text_cells += 1
                     continue
-                row_total += float(value)
-                aggregate[pn][date] += float(value)
+                qty = float(value)
+                row_total += qty
+                if qty:
+                    nonzero_qty_cells += 1
+                    row_values.append((date, qty))
+
+            if drop_zero_total_rows and nonzero_qty_cells == 0:
+                dropped_zero_rows.append({
+                    "source": dps_path,
+                    "row": row_num,
+                    "part_number": pn,
+                })
+                continue
+
+            label_is_numeric.setdefault(pn, is_numeric)
+            for date, qty in row_values:
+                aggregate[pn][date] += qty
 
             if pn.endswith("*"):
                 excluded[pn] += row_total
@@ -202,6 +223,7 @@ def read_dps_data(
             "date_range": (all_dates[0], all_dates[-1]),
             "excluded": dict(excluded),
             "text_cells": text_cells,
+            "dropped_zero_rows": dropped_zero_rows,
         }
     finally:
         wb.close()
@@ -215,11 +237,13 @@ def combine_dps_data(items: Sequence[dict]) -> dict:
     text_cells = 0
     date_columns = 0
     sources = []
+    dropped_zero_rows = []
 
     for item in items:
         sources.append(item)
         date_columns += item["date_columns"]
         text_cells += item["text_cells"]
+        dropped_zero_rows.extend(item.get("dropped_zero_rows", []))
         all_dates.update(item["all_dates"])
         for pn, is_numeric in item["label_is_numeric"].items():
             label_is_numeric.setdefault(pn, is_numeric)
@@ -243,6 +267,7 @@ def combine_dps_data(items: Sequence[dict]) -> dict:
         "date_range": (sorted_dates[0], sorted_dates[-1]),
         "excluded": dict(excluded),
         "text_cells": text_cells,
+        "dropped_zero_rows": dropped_zero_rows,
     }
 
 
@@ -272,6 +297,22 @@ def build_dps_rows(
     return out_dates, rows
 
 
+def trim_trailing_zero_dates(
+    dates: Sequence[dt.date],
+    rows: Sequence[tuple[str, bool, dict[dt.date, float]]],
+) -> tuple[list[dt.date], list[dt.date]]:
+    last_nonzero_index = None
+    for index, date in enumerate(dates):
+        if any(values.get(date, 0.0) for _pn, _is_numeric, values in rows):
+            last_nonzero_index = index
+
+    if last_nonzero_index is None:
+        return list(dates), []
+    kept = list(dates[:last_nonzero_index + 1])
+    trimmed = list(dates[last_nonzero_index + 1:])
+    return kept, trimmed
+
+
 def generate_dps(
     dps_path: Path,
     output_path: Path,
@@ -279,12 +320,15 @@ def generate_dps(
     tail_cutoff: dt.date | None = None,
     sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
     part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
+    drop_zero_total_rows: bool = False,
+    trim_trailing_zero_date_columns: bool = False,
 ) -> dict:
     data = read_dps_data(
         dps_path,
         include_star_parts=include_star_parts,
         sheet_keywords=sheet_keywords,
         part_number_headers=part_number_headers,
+        drop_zero_total_rows=drop_zero_total_rows,
     )
     out_dates, rows = build_dps_rows(
         data["aggregate"],
@@ -292,6 +336,9 @@ def generate_dps(
         data["all_dates"],
         tail_cutoff,
     )
+    trimmed_trailing_zero_dates = []
+    if trim_trailing_zero_date_columns:
+        out_dates, trimmed_trailing_zero_dates = trim_trailing_zero_dates(out_dates, rows)
     write_dps_workbook(output_path, out_dates, rows, template_path=dps_path)
 
     grand_total = sum(sum(v.values()) for _pn, _n, v in rows)
@@ -309,6 +356,8 @@ def generate_dps(
         "grand_total": clean_number(grand_total),
         "excluded": data["excluded"],
         "text_cells": data["text_cells"],
+        "dropped_zero_rows": data["dropped_zero_rows"],
+        "trimmed_trailing_zero_dates": trimmed_trailing_zero_dates,
     }
 
 
@@ -319,6 +368,8 @@ def generate_merged_dps(
     tail_cutoff: dt.date | None = None,
     sheet_keywords: Sequence[str] = DPS_SOURCE_SHEET_KEYWORDS,
     part_number_headers: Sequence[str] = DPS_PART_NUMBER_HEADERS,
+    drop_zero_total_rows: bool = False,
+    trim_trailing_zero_date_columns: bool = False,
 ) -> dict:
     items = []
     skipped = []
@@ -330,6 +381,7 @@ def generate_merged_dps(
                     include_star_parts=include_star_parts,
                     sheet_keywords=sheet_keywords,
                     part_number_headers=part_number_headers,
+                    drop_zero_total_rows=drop_zero_total_rows,
                 )
             )
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - 合併模式需略過壞檔
@@ -346,6 +398,9 @@ def generate_merged_dps(
         combined["all_dates"],
         tail_cutoff,
     )
+    trimmed_trailing_zero_dates = []
+    if trim_trailing_zero_date_columns:
+        out_dates, trimmed_trailing_zero_dates = trim_trailing_zero_dates(out_dates, rows)
     template_path = items[0]["source"]
     write_dps_workbook(output_path, out_dates, rows, template_path=template_path)
 
@@ -361,6 +416,7 @@ def generate_merged_dps(
                 "date_columns": item["date_columns"],
                 "dates": item["dates"],
                 "date_range": item["date_range"],
+                "dropped_zero_rows": item["dropped_zero_rows"],
             }
             for item in items
         ],
@@ -374,6 +430,8 @@ def generate_merged_dps(
         "grand_total": clean_number(grand_total),
         "excluded": combined["excluded"],
         "text_cells": combined["text_cells"],
+        "dropped_zero_rows": combined["dropped_zero_rows"],
+        "trimmed_trailing_zero_dates": trimmed_trailing_zero_dates,
     }
 
 

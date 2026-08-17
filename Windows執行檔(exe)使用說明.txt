@@ -105,11 +105,15 @@ names = AVTC, RAKEN
 [customer.AVTC]
 dps_mode = first_valid
 pp_mode = first_valid
+dps_drop_zero_total_rows = false
+dps_trim_trailing_zero_dates = false
 dps_pp_dps_weeks_ahead = 5
 
 [customer.RAKEN]
 dps_mode = merge_all
 pp_mode = first_valid
+dps_drop_zero_total_rows = true
+dps_trim_trailing_zero_dates = true
 dps_pp_dps_weeks_ahead = 3
 
 若未來 PP 的樞紐分析表 sheet 改成其他命名，例如 Pivot，可改成：
@@ -125,6 +129,8 @@ part_number_headers = AVTC P/N, P/N, Model, Buyer P/N
 多個關鍵字請用逗號分隔。修改 buyer_reports.ini 後重新雙擊 BuyerReports.exe 即可，不需要重新 build。
 dps_mode = first_valid 代表取第一份格式正確的 DPS。
 dps_mode = merge_all 代表合併該客戶資料夾內所有格式正確的 DPS。
+dps_drop_zero_total_rows = true 代表 DPS 來源列若所有日期欄都沒有非 0 數量，就不輸出該列；RAKEN 預設開啟，AVTC 預設關閉。
+dps_trim_trailing_zero_dates = true 代表 DPS 輸出只列到最後一個有非 0 數量的日期；只會裁掉尾端連續空白日期，中間空白日期仍保留。RAKEN 預設開啟，AVTC 預設關閉。
 dps_pp_dps_weeks_ahead 代表 DPS+PP 中 DPS 要保留到目前 buyer week 往後幾週。
 
 輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。total 由程式先計算好，不使用 Excel 公式。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。
