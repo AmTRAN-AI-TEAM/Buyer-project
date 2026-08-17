@@ -319,7 +319,7 @@ def setup_run_log(out_dirs: Path | Sequence[Path]) -> tuple[Path, ...]:
     log_paths = []
     seen = set()
     for out_dir in dirs:
-        log_path = out_dir / "run.log"
+        log_path = out_dir / "log"
         key = log_path.resolve()
         if key in seen:
             continue
@@ -381,7 +381,7 @@ def clean_number(value: float):
 
 
 def text_value(value) -> str:
-    """把輸出值固定轉成 Excel 文字格式使用的字串。"""
+    """把輸出值固定轉成 Excel 文字欄位使用的字串。"""
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -394,6 +394,51 @@ def text_value(value) -> str:
 def write_text_cell(cell, value) -> None:
     cell.value = text_value(value)
     cell.number_format = "@"
+
+
+def number_value(value):
+    """把輸出數據固定轉成 Excel 數值欄位使用的值。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return clean_number(float(value))
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return clean_number(float(text))
+    except ValueError:
+        return None
+
+
+def write_number_cell(cell, value) -> None:
+    cell.value = number_value(value)
+    cell.number_format = "General"
+
+
+def enforce_output_types(
+    ws,
+    max_row: int,
+    max_col: int,
+    text_rows: Iterable[int] = (),
+    text_cols: Iterable[int] = (),
+    number_cols: Iterable[int] = (),
+) -> None:
+    text_row_set = set(text_rows)
+    text_col_set = set(text_cols)
+    number_col_set = set(number_cols)
+    for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
+        for cell in row:
+            if cell.row in text_row_set or cell.column in text_col_set:
+                if cell.value is not None:
+                    cell.value = text_value(cell.value)
+                cell.number_format = "@"
+            elif cell.column in number_col_set:
+                if cell.value is not None:
+                    cell.value = number_value(cell.value)
+                cell.number_format = "General"
 
 
 def enforce_text_range(ws, max_row: int, max_col: int) -> None:

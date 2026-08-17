@@ -6,7 +6,7 @@
 
 用法::
 
-    python generate_buyer_reports.py                     # 自動抓 intput/ 下的檔案
+    python generate_buyer_reports.py                     # 自動抓 input/ 下的檔案
     python generate_buyer_reports.py --compare           # 額外與人工整理版逐格對帳
     python generate_buyer_reports.py --dps A.xlsx --pp B.xlsx --out-dir /tmp/out
 

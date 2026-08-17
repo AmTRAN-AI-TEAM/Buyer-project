@@ -24,7 +24,7 @@ from .common import (
     copy_row_layout,
     DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
     DEFAULT_PP_SHEET_KEYWORDS,
-    enforce_text_range,
+    enforce_output_types,
     find_total_col,
     first_existing_sheet,
     keyword_label,
@@ -34,6 +34,7 @@ from .common import (
     set_filter_to_used_range,
     sheet_name_matches_keywords,
     warn,
+    write_number_cell,
     write_text_cell,
 )
 
@@ -826,10 +827,10 @@ def write_pp_workbook(
         write_text_cell(ws.cell(r, 3), row[2])
         total_value = 0.0
         for offset, value in enumerate(row[3:]):
-            write_text_cell(ws.cell(r, 4 + offset), value)
+            write_number_cell(ws.cell(r, 4 + offset), value)
             if offset in total_index_set:
                 total_value += numeric(value)
-        write_text_cell(ws.cell(r, total_col), clean_number(total_value))
+        write_number_cell(ws.cell(r, total_col), clean_number(total_value))
 
     for cell in ws[1]:
         if cell.value is not None:
@@ -845,7 +846,14 @@ def write_pp_workbook(
     last_row = len(rows) + 1
     apply_pp_layout(ws, template_path, last_col, total_col, last_row)
     unhide_pp_output_columns(ws, total_col)
-    enforce_text_range(ws, last_row, total_col)
+    enforce_output_types(
+        ws,
+        last_row,
+        total_col,
+        text_rows={1},
+        text_cols={1, 2, 3},
+        number_cols=[*range(4, last_col + 1), total_col],
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)

@@ -54,7 +54,7 @@ buyer-reports/
 │   ├── dps_pp.py               # DPS+PP 整合輸出
 │   ├── compare.py              # 對帳工具
 │   └── runner.py               # CLI、找檔與執行流程
-├── intput/                     # 輸入：把來源 Excel 放這裡
+├── input/                      # 輸入：把來源 Excel 放這裡
 │   ├── AVTC/
 │   │   ├── AVTC 的 DPS 檔
 │   │   └── AVTC 的 PP 檔
@@ -80,7 +80,7 @@ buyer-reports/
 ```bash
 pip install -r requirements.txt
 
-# 最常用：自動抓 intput/AVTC、intput/RAKEN 下的檔案，產出到 output/
+# 最常用：自動抓 input/AVTC、input/RAKEN 下的檔案，產出到 output/
 python generate_buyer_reports.py
 
 # 產出後順便跟來源檔內既有的人工整理版逐格對帳
@@ -91,8 +91,8 @@ python generate_buyer_reports.py --compare
 AVTC 同類有多個檔案時會依修改時間由新到舊嘗試，第一份格式正確者產出；
 RAKEN DPS 會把所有格式正確的 DPS 檔合併，格式不符的檔案會被略過並列出警告。
 也可用 `--dps` / `--pp` 明確指定。
-每次執行都會在本次處理的客戶輸出資料夾寫入 `run.log`，例如
-`output/RAKEN/run.log`，方便回查成功訊息或錯誤原因。
+每次執行都會在本次處理的客戶輸出資料夾寫入 `log`，例如
+`output/RAKEN/log`，方便回查成功訊息或錯誤原因。
 同一客戶同時有可用 DPS 與 PP 時，還會額外產出 `DPS+PP.xlsx`。
 
 ## 偵測關鍵字設定
@@ -152,7 +152,7 @@ BuyerReports/
 ├── BuyerReports.exe
 ├── _internal/
 ├── buyer_reports.ini
-├── intput/
+├── input/
 │   ├── AVTC/
 │   └── RAKEN/
 ├── output/
@@ -161,7 +161,7 @@ BuyerReports/
 └── Windows執行檔(exe)使用說明.txt
 ```
 
-使用者只要把 AVTC 檔案放進 `intput/AVTC/`、RAKEN 檔案放進 `intput/RAKEN/`，
+使用者只要把 AVTC 檔案放進 `input/AVTC/`、RAKEN 檔案放進 `input/RAKEN/`，
 再雙擊 `BuyerReports.exe`。完成後到 `output/AVTC/`、`output/RAKEN/`
 取得各自的 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
 若 DPS 與 PP 來源都可用，也會產出 `DPS+PP.xlsx`。
@@ -179,7 +179,7 @@ exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其�
 build_exe.bat
 ```
 
-打包完成後產物會在 `release/BuyerReports/`。腳本會自動建立 `intput/`、
+打包完成後產物會在 `release/BuyerReports/`。腳本會自動建立 `input/`、
 `output/`，並複製使用說明與 `buyer_reports.ini`。若要提供 zip 給使用者，
 可自行壓縮要交付的 release 資料夾；使用者仍需要先完整解壓縮後再執行。
 
@@ -195,7 +195,7 @@ build_exe.bat
 | 列標籤 | 使用選定的 DPS 料號欄；料號結尾帶 `*` 者預設會被排除（與人工整理一致，可用 `--include-star-parts` 保留） |
 | 排序 | 模擬 Excel 樞紐：數字型標籤在前（依數值），文字型在後 |
 | 空值 | 數量為 0 時留白，不填 0（與人工版一致） |
-| total | 由程式計算後以文字寫入，不再使用 Excel 公式 |
+| total | 由程式計算後以數值寫入，不再使用 Excel 公式 |
 | 客戶模式 | AVTC 預設 `first_valid`；RAKEN 預設 `merge_all`，會合併所有可用 DPS 檔，同料號同日期累加 |
 
 **末欄彙總桶**：人工版是 Excel 樞紐日期群組的產物，最後一個日期欄其實是
@@ -225,7 +225,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | 隱藏欄 | 來源樞紐報表中 hidden 的 WK / FCST 時間欄仍會納入，整理後會強制顯示 |
 | 年度合計欄 | 略過 |
 | 列序 | 依選定 PP 工作表上的樞紐報表客戶顯示順序，同客戶內依料號排序 |
-| total | 由程式計算後以文字寫入，不再使用 Excel 公式；PP 只從起始週開始累加，欄名會寫成如 `total(WK31起)` |
+| total | 由程式計算後以數值寫入，不再使用 Excel 公式；PP 只從起始週開始累加，欄名會寫成如 `total(WK31起)` |
 
 **期間欄怎麼決定的**：輸出期間分兩段處理。第一段會從 pivot cache 補齊主年度中
 早於起始週的所有 WK 週欄；第二段讀取選定 PP 工作表上描述樞紐版面的那一列
@@ -253,7 +253,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | DPS 後段數字 | 若 DPS 在 PP 接續週含之後仍有數字，併入 DPS 保留週的最後一天 |
 | PP 接續欄 | 只取 cutover 之後的 PP 週欄與月 FCST 欄 |
 | BOM | 若來源檔有 `BOM1`，用 B 欄料號對應 H 欄 vendor；沒有則留空 |
-| total | 由程式加總整份 `DPS+PP` 期間欄，以文字寫入 |
+| total | 由程式加總整份 `DPS+PP` 期間欄，以數值寫入 |
 
 ## 常用參數
 
@@ -314,7 +314,7 @@ DPS 完全一致。PP 的 3 處差異均為人工整理疏漏，本工具產出�
 
 ## 版面說明
 
-輸出刻意貼近人工版，並把標題、料號、數量與 total 都以文字格式寫入；
+輸出刻意貼近人工版，標題與料號欄以文字格式寫入，數量欄與 total 以數值格式寫入；
 DPS / PP 的 `total` 都由程式先算好後寫入，不再依賴 Excel `=SUM()` 公式。
 PP 的 `total` 仍保留在期間欄後方，前面留 3 個空白欄，與人工版一致；
 欄名會標示起算欄，例如 `total(WK31起)`。

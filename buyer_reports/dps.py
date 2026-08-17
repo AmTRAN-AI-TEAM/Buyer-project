@@ -20,7 +20,7 @@ from .common import (
     date_text,
     DEFAULT_DPS_SHEET_KEYWORDS,
     DEFAULT_DPS_PART_NUMBER_HEADERS,
-    enforce_text_range,
+    enforce_output_types,
     find_total_col,
     first_existing_sheet,
     first_sheet_matching_keywords,
@@ -29,6 +29,7 @@ from .common import (
     normalize_label,
     set_filter_to_used_range,
     warn,
+    write_number_cell,
     write_text_cell,
 )
 
@@ -400,9 +401,9 @@ def write_dps_workbook(
             qty = values.get(date, 0.0)
             # 人工版的空白格是留空而非填 0，這裡保持一致
             if qty:
-                write_text_cell(ws.cell(r, 2 + offset), clean_number(qty))
+                write_number_cell(ws.cell(r, 2 + offset), clean_number(qty))
                 total_qty += qty
-        write_text_cell(ws.cell(r, total_col), clean_number(total_qty))
+        write_number_cell(ws.cell(r, total_col), clean_number(total_qty))
 
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -412,7 +413,14 @@ def write_dps_workbook(
     ws.column_dimensions["A"].width = 24.83
     last_row = len(rows) + 1
     apply_dps_layout(ws, template_path, total_col, last_row)
-    enforce_text_range(ws, last_row, total_col)
+    enforce_output_types(
+        ws,
+        last_row,
+        total_col,
+        text_rows={1},
+        text_cols={1},
+        number_cols=range(2, total_col + 1),
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)

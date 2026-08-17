@@ -23,5 +23,8 @@ release/
 ~$*.xlsx
 
 # Local input Excel files
+input/*.xlsx
+input/**/*.xlsx
+# Legacy typo folder kept ignored for local leftovers from older versions.
 intput/*.xlsx
 intput/**/*.xlsx

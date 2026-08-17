@@ -53,9 +53,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist release\BuyerReports\intput mkdir release\BuyerReports\intput
-if not exist release\BuyerReports\intput\AVTC mkdir release\BuyerReports\intput\AVTC
-if not exist release\BuyerReports\intput\RAKEN mkdir release\BuyerReports\intput\RAKEN
+if not exist release\BuyerReports\input mkdir release\BuyerReports\input
+if not exist release\BuyerReports\input\AVTC mkdir release\BuyerReports\input\AVTC
+if not exist release\BuyerReports\input\RAKEN mkdir release\BuyerReports\input\RAKEN
 if not exist release\BuyerReports\output mkdir release\BuyerReports\output
 if not exist release\BuyerReports\output\AVTC mkdir release\BuyerReports\output\AVTC
 if not exist release\BuyerReports\output\RAKEN mkdir release\BuyerReports\output\RAKEN

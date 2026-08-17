@@ -19,10 +19,11 @@ from .common import (
     DEFAULT_DPS_SHEET_KEYWORDS,
     DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
     DEFAULT_PP_SHEET_KEYWORDS,
-    enforce_text_range,
+    enforce_output_types,
     numeric,
     set_filter_to_used_range,
     warn,
+    write_number_cell,
     write_text_cell,
 )
 from .dps import (
@@ -369,7 +370,10 @@ def write_dps_pp_workbook(
 
     for offset, row_values in enumerate(rows, start=5):
         for col_idx, value in enumerate(row_values, start=1):
-            write_text_cell(ws.cell(offset, col_idx), value)
+            if col_idx == 1 or col_idx == bom_col:
+                write_text_cell(ws.cell(offset, col_idx), value)
+            else:
+                write_number_cell(ws.cell(offset, col_idx), value)
 
     for row in ws.iter_rows(min_row=1, max_row=4, max_col=bom_col):
         for cell in row:
@@ -383,7 +387,14 @@ def write_dps_pp_workbook(
     ws.column_dimensions["A"].width = 28.0
     ws.column_dimensions[get_column_letter(total_col)].width = 14.0
     ws.column_dimensions[get_column_letter(bom_col)].width = 20.0
-    enforce_text_range(ws, len(rows) + 4, bom_col)
+    enforce_output_types(
+        ws,
+        len(rows) + 4,
+        bom_col,
+        text_rows=range(1, 5),
+        text_cols={1, bom_col},
+        number_cols=range(2, total_col + 1),
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)

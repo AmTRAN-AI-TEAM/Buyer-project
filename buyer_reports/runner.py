@@ -67,7 +67,7 @@ def find_input_candidates(
     kind: str,
     multiple_action: str = "將依修改時間由新到舊嘗試。",
 ) -> list[Path]:
-    """在 intput/ 底下依關鍵字找輸入檔；多個候選時依修改時間由新到舊回傳。"""
+    """在 input/ 底下依關鍵字找輸入檔；多個候選時依修改時間由新到舊回傳。"""
     if not input_dir.is_dir():
         raise SystemExit(f"找不到輸入資料夾：{input_dir}")
     candidates = [
@@ -100,7 +100,7 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
         description="由 DPS / PP 原始資料生成整理後報表（數值一律以原始檔為準）。",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input-dir", type=Path, default=project_root / "intput",
+    parser.add_argument("--input-dir", type=Path, default=project_root / "input",
                         help="輸入資料夾")
     parser.add_argument("--out-dir", type=Path, default=project_root / "output",
                         help="輸出資料夾（不存在會自動建立）")
@@ -197,13 +197,13 @@ def build_run_contexts(args) -> list[RunContext]:
     if contexts:
         if has_excel_files(args.input_dir):
             args.context_warnings.append(
-                "已偵測到客戶資料夾內有 Excel，intput 根目錄下的 Excel 將不處理。"
+                "已偵測到客戶資料夾內有 Excel，input 根目錄下的 Excel 將不處理。"
             )
         return contexts
 
     if has_excel_files(args.input_dir):
         args.context_warnings.append(
-            "未偵測到 AVTC/RAKEN 客戶資料夾內有 Excel，改用舊版 intput 根目錄流程。"
+            "未偵測到 AVTC/RAKEN 客戶資料夾內有 Excel，改用舊版 input 根目錄流程。"
         )
         return [
             RunContext(
@@ -305,7 +305,7 @@ def log_single_dps_info(info: dict, dps_out: Path, title: str) -> None:
             log(f"      - {pn}  {clean_number(qty):,}")
     if info["text_cells"]:
         log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
-    log("  輸出格式        ：文字")
+    log("  輸出格式        ：料號文字；數據與 total 為數值")
     log(f"  產出檔          ：{dps_out}")
 
 
@@ -337,7 +337,7 @@ def log_merged_dps_info(info: dict, dps_out: Path, title: str) -> None:
             f"（用 --include-star-parts 可保留）")
     if info["text_cells"]:
         log(f"  日期區文字格    ：{info['text_cells']} 格（已當 0 計）")
-    log("  輸出格式        ：文字")
+    log("  輸出格式        ：料號文字；數據與 total 為數值")
     log(f"  產出檔          ：{dps_out}")
 
 
@@ -513,7 +513,7 @@ def run_pp_report(args, context: RunContext, progress: Progress | None = None) -
             log(f"  輸出            ：{info['rows']} 列"
                 f"（已略過期間內全為 0 的 {info['dropped_zero']} 個料號），"
                 f"合計 {info['grand_total']:,} pcs")
-            log("  輸出格式        ：文字")
+            log("  輸出格式        ：料號文字；數據與 total 為數值")
             log(f"  產出檔          ：{pp_out}")
 
             if info["refreshed_date"] and info["refreshed_date"] < dt.date.today() - dt.timedelta(days=45):
@@ -659,7 +659,7 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
                 f"PP 期間欄 {len(info['pp_periods'])} 欄，"
                 f"合計 {info['grand_total']:,} pcs"
             )
-            log("  輸出格式        ：文字")
+            log("  輸出格式        ：料號文字；數據與 total 為數值")
             log(f"  產出檔          ：{out_path}")
             if args.compare:
                 warn(f"{title} 目前沒有單一人工整理表可逐格對帳，已略過 --compare。")
@@ -718,7 +718,7 @@ def run_reports(args) -> bool:
         warn(message)
 
     if not contexts:
-        log("\n找不到任何可處理的 Excel。請把檔案放入 intput/AVTC 或 intput/RAKEN。")
+        log("\n找不到任何可處理的 Excel。請把檔案放入 input/AVTC 或 input/RAKEN。")
         return False
 
     log("本次處理資料夾：")
@@ -755,7 +755,7 @@ def run_reports(args) -> bool:
         log("\n沒有啟用任何報表。")
         return True
     if failed:
-        log("[警告] 部分報表未產出，請查看上方警告或對應 output 子資料夾的 run.log。")
+        log("[警告] 部分報表未產出，請查看上方警告或對應 output 子資料夾的 log。")
     log("\n完成。")
     return success and not failed
 

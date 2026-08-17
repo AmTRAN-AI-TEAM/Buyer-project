@@ -40,7 +40,7 @@ BuyerReports/
   BuyerReports.exe
   _internal/
   buyer_reports.ini
-  intput/
+  input/
     AVTC/
     RAKEN/
   output/
@@ -48,8 +48,8 @@ BuyerReports/
     RAKEN/
   Windows執行檔(exe)使用說明.txt
 
-注意：輸入資料夾名稱是 intput，請不要改名。
-注意：AVTC 檔案請放 intput/AVTC，RAKEN 檔案請放 intput/RAKEN。
+注意：輸入資料夾名稱是 input，請不要改名。
+注意：AVTC 檔案請放 input/AVTC，RAKEN 檔案請放 input/RAKEN。
 注意：buyer_reports.ini 是 sheet / 欄位偵測關鍵字設定，請和 BuyerReports.exe 放在同一層。
 注意：如果收到的是 zip 壓縮檔，請先完整解壓縮，不要在壓縮檔視窗內直接雙擊 BuyerReports.exe。
 
@@ -60,8 +60,8 @@ BuyerReports/
 2. 進入解壓後的 BuyerReports 資料夾。
 
 3. 把 DPS 與 PP 來源 Excel 檔放進對應資料夾。
-   - AVTC 檔案放進 intput/AVTC
-   - RAKEN 檔案放進 intput/RAKEN
+   - AVTC 檔案放進 input/AVTC
+   - RAKEN 檔案放進 input/RAKEN
    - DPS 檔名需包含 DPS
    - PP 檔名需包含 PP
 
@@ -80,9 +80,9 @@ BuyerReports/
    - output/RAKEN/DPS+PP.xlsx
    實際會產出哪些檔案，取決於該客戶資料夾內是否有對應來源檔。
 
-7. 每次執行都會在對應的客戶 output 資料夾產生 run.log，例如 output/RAKEN/run.log。
+7. 每次執行都會在對應的客戶 output 資料夾產生 log，例如 output/RAKEN/log。
    如果某一種報表格式錯誤，工具會略過該報表並繼續嘗試另一種報表。
-   若有報表未產出，請把 run.log 交給維護者確認原因。
+   若有報表未產出，請把 log 交給維護者確認原因。
 
 四、偵測關鍵字設定
 
@@ -127,12 +127,12 @@ dps_mode = first_valid 代表取第一份格式正確的 DPS。
 dps_mode = merge_all 代表合併該客戶資料夾內所有格式正確的 DPS。
 dps_pp_dps_weeks_ahead 代表 DPS+PP 中 DPS 要保留到目前 buyer week 往後幾週。
 
-輸出檔的標題、料號、數量與 total 會以文字格式寫入；total 由程式先計算好，不使用 Excel 公式。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。
+輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。total 由程式先計算好，不使用 Excel 公式。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。
 
 五、常見問題
 
 1. 找不到 DPS 或 PP 檔案
-   請確認檔案已放在 intput/AVTC 或 intput/RAKEN，且檔名包含 DPS 或 PP。
+   請確認檔案已放在 input/AVTC 或 input/RAKEN，且檔名包含 DPS 或 PP。
 
 2. Windows 顯示「無法訪問指定設備、路徑或文件」
    請確認不是在 zip 壓縮檔視窗內直接執行。請先完整解壓縮，再到解壓後的 BuyerReports 資料夾內執行。
@@ -146,8 +146,8 @@ dps_pp_dps_weeks_ahead 代表 DPS+PP 中 DPS 要保留到目前 buyer week 往�
    PP 請確認至少有一張工作表名稱包含 buyer_reports.ini 內的 PP 關鍵字，且該工作表內有樞紐分析表。
 
 5. 只有其中一份報表產出
-   代表另一份來源檔可能格式不符。請查看對應客戶 output 資料夾內的 run.log。
-   若 output 內已有同名整理後檔案，可能是前次執行留下的舊檔，請以 run.log 的本次摘要為準。
+   代表另一份來源檔可能格式不符。請查看對應客戶 output 資料夾內的 log。
+   若 output 內已有同名整理後檔案，可能是前次執行留下的舊檔，請以 log 的本次摘要為準。
 
 6. 無法寫入 output
    請確認輸出檔沒有被 Excel 開著，或整個資料夾沒有被設為唯讀。
