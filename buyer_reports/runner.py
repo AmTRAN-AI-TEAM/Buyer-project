@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import re
+import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,7 @@ class RunContext:
     dps_mode: str
     pp_mode: str
     dps_pp_dps_weeks_ahead: int
+    dps_pp_dps_weeks_source: str
     dps_drop_zero_total_rows: bool
     dps_trim_trailing_zero_dates: bool
     legacy: bool = False
@@ -128,6 +130,8 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
                         help="PP 報表基準日；省略時取樞紐快取的更新日期")
     parser.add_argument("--dps-pp-current-week", default="auto",
                         help="DPS+PP 目前週：auto（依執行日推算；週五提前用下一週）或週數")
+    parser.add_argument("--raken-dps-pp-weeks", type=int, choices=(2, 3, 4), default=None,
+                        help="RAKEN DPS+PP 的 DPS 保留週數（含本週）；省略時依 INI，Windows exe 會跳出選擇視窗")
 
     parser.add_argument("--compare", action="store_true",
                         help="與來源檔內既有的人工整理版逐格對帳並列出差異")
@@ -162,6 +166,128 @@ def has_excel_files(input_dir: Path) -> bool:
     )
 
 
+def update_customer_dps_pp_weeks(args, customer_name: str, weeks: int, source: str) -> None:
+    for customer in args.customers:
+        if customer["name"].casefold() == customer_name.casefold():
+            customer["dps_pp_dps_weeks_ahead"] = weeks
+            customer["dps_pp_dps_weeks_source"] = source
+            return
+
+
+def should_prompt_raken_dps_pp_weeks(args) -> bool:
+    if not is_frozen_app() or not sys.platform.startswith("win"):
+        return False
+    if args.raken_dps_pp_weeks is not None:
+        return False
+    if args.skip_dps or args.skip_pp or args.skip_dps_pp:
+        return False
+    if args.dps is not None or args.pp is not None:
+        return False
+    return has_excel_files(args.input_dir / "RAKEN")
+
+
+def select_raken_dps_pp_weeks(default_weeks: int) -> int | None:
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except Exception as exc:  # pragma: no cover - depends on Windows runtime
+        warn(f"無法開啟 RAKEN 週數選擇視窗，已使用設定檔週數。原因：{exc}")
+        return None
+
+    options = (2, 3, 4)
+    if default_weeks not in options:
+        default_weeks = 3
+
+    selected = {"value": None}
+
+    root = tk.Tk()
+    root.title("RAKEN DPS+PP 週數選擇")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+
+    frame = ttk.Frame(root, padding=20)
+    frame.grid(row=0, column=0, sticky="nsew")
+
+    ttk.Label(
+        frame,
+        text="請選擇 RAKEN DPS+PP 的 DPS 保留週數",
+        font=("Microsoft JhengHei UI", 11, "bold"),
+    ).grid(row=0, column=0, columnspan=3, sticky="w")
+    ttk.Label(
+        frame,
+        text="此選項只影響 RAKEN 的 DPS+PP.xlsx，週數包含目前週。",
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 14))
+
+    def choose(value: int) -> None:
+        selected["value"] = value
+        root.destroy()
+
+    for col, weeks in enumerate(options):
+        label = f"{weeks} 週"
+        if weeks == default_weeks:
+            label += "（預設）"
+        ttk.Button(
+            frame,
+            text=label,
+            command=lambda value=weeks: choose(value),
+            width=14,
+        ).grid(row=2, column=col, padx=4, ipadx=6, ipady=6)
+
+    ttk.Label(
+        frame,
+        text="關閉視窗或按 Esc 會沿用預設值。",
+    ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(14, 0))
+
+    def use_default(_event=None) -> None:
+        choose(default_weeks)
+
+    root.protocol("WM_DELETE_WINDOW", use_default)
+    root.bind("<Escape>", use_default)
+    root.update_idletasks()
+    width = root.winfo_width()
+    height = root.winfo_height()
+    left = max((root.winfo_screenwidth() - width) // 2, 0)
+    top = max((root.winfo_screenheight() - height) // 2, 0)
+    root.geometry(f"+{left}+{top}")
+    root.mainloop()
+    return selected["value"]
+
+
+def apply_raken_dps_pp_weeks_selection(args) -> None:
+    args.raken_dps_pp_weeks_source = None
+    if args.raken_dps_pp_weeks is not None:
+        update_customer_dps_pp_weeks(
+            args,
+            "RAKEN",
+            args.raken_dps_pp_weeks,
+            "命令列參數 --raken-dps-pp-weeks",
+        )
+        args.raken_dps_pp_weeks_source = "命令列參數 --raken-dps-pp-weeks"
+        return
+
+    if not should_prompt_raken_dps_pp_weeks(args):
+        return
+
+    default_weeks = next(
+        (
+            customer["dps_pp_dps_weeks_ahead"]
+            for customer in args.customers
+            if customer["name"].casefold() == "raken"
+        ),
+        3,
+    )
+    selected_weeks = select_raken_dps_pp_weeks(default_weeks)
+    if selected_weeks is None:
+        return
+    update_customer_dps_pp_weeks(
+        args,
+        "RAKEN",
+        selected_weeks,
+        "Windows 啟動畫面選擇",
+    )
+    args.raken_dps_pp_weeks_source = "Windows 啟動畫面選擇"
+
+
 def build_run_contexts(args) -> list[RunContext]:
     args.context_warnings = []
     for customer in args.customers:
@@ -176,6 +302,7 @@ def build_run_contexts(args) -> list[RunContext]:
                 dps_mode="first_valid",
                 pp_mode="first_valid",
                 dps_pp_dps_weeks_ahead=5,
+                dps_pp_dps_weeks_source="舊版根目錄預設",
                 dps_drop_zero_total_rows=False,
                 dps_trim_trailing_zero_dates=False,
                 legacy=True,
@@ -195,6 +322,10 @@ def build_run_contexts(args) -> list[RunContext]:
                 dps_mode=customer["dps_mode"],
                 pp_mode=customer["pp_mode"],
                 dps_pp_dps_weeks_ahead=customer["dps_pp_dps_weeks_ahead"],
+                dps_pp_dps_weeks_source=customer.get(
+                    "dps_pp_dps_weeks_source",
+                    "buyer_reports.ini / 內建預設",
+                ),
                 dps_drop_zero_total_rows=customer["dps_drop_zero_total_rows"],
                 dps_trim_trailing_zero_dates=customer["dps_trim_trailing_zero_dates"],
             )
@@ -219,6 +350,7 @@ def build_run_contexts(args) -> list[RunContext]:
                 dps_mode="first_valid",
                 pp_mode="first_valid",
                 dps_pp_dps_weeks_ahead=5,
+                dps_pp_dps_weeks_source="舊版根目錄預設",
                 dps_drop_zero_total_rows=False,
                 dps_trim_trailing_zero_dates=False,
                 legacy=True,
@@ -698,6 +830,10 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
                 f"WK{info['current_week']:02d}"
             )
             log(
+                f"  DPS 保留週數    ：含本週共 {context.dps_pp_dps_weeks_ahead} 週"
+                f"（{context.dps_pp_dps_weeks_source}）"
+            )
+            log(
                 f"  DPS 使用範圍    ：到 WK{info['dps_cutoff_week']:02d} "
                 f"({info['dps_cutoff_range'][0]} ~ {info['dps_cutoff_range'][1]})"
             )
@@ -774,6 +910,7 @@ def run_reports(args) -> bool:
         f"{customer['name']}（DPS={customer['dps_mode']}，"
         f"PP={customer['pp_mode']}，"
         f"DPS+PP 的 DPS 保留週數=含本週共{customer['dps_pp_dps_weeks_ahead']}週，"
+        f"週數來源={customer.get('dps_pp_dps_weeks_source', 'buyer_reports.ini / 內建預設')}，"
         f"DPS零數量列={'略過' if customer['dps_drop_zero_total_rows'] else '保留'}，"
         f"DPS尾端空白日期={'略過' if customer['dps_trim_trailing_zero_dates'] else '保留'}）"
         for customer in args.customers
@@ -842,6 +979,7 @@ def main() -> int:
         args.dps_part_number_headers = sheet_config["dps_part_number_headers"]
         args.pp_part_number_field_keywords = sheet_config["pp_part_number_field_keywords"]
         args.customers = sheet_config["customers"]
+        apply_raken_dps_pp_weeks_selection(args)
         ok = run_reports(args)
         return 0 if ok else 1
     except SystemExit as exc:

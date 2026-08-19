@@ -41,6 +41,8 @@ if exist release\BuyerReports rmdir /s /q release\BuyerReports
   --clean ^
   --onedir ^
   --console ^
+  --hidden-import tkinter ^
+  --hidden-import tkinter.ttk ^
   --name BuyerReports ^
   --distpath release ^
   --workpath build ^
