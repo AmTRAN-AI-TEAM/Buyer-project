@@ -489,7 +489,7 @@ def build_pp_periods(
                 layout.append(f"{month}'{next_year} FCST")
 
     # 第一輪：走一遍版面，判斷每個週欄屬於哪個月、哪些月份有週明細
-    tokens: list[tuple[str, object, str]] = []  # (kind, key, label)
+    tokens: list[tuple[str, object, str, str | None]] = []
     current_month: str | None = None
     weekly_months: set[tuple[str, str]] = set()
 
@@ -498,7 +498,7 @@ def build_pp_periods(
         if not text:
             continue
         if TOTAL_LABEL_RE.search(text) and not WEEK_LABEL_RE.match(text):
-            tokens.append(("total", None, text))
+            tokens.append(("total", None, text, None))
             current_month = None
             continue
         m = WEEK_LABEL_RE.match(text)
@@ -519,16 +519,16 @@ def build_pp_periods(
             if month:
                 current_month = month
                 weekly_months.add((base_year, month))
-            tokens.append(("week", week, f"WK{week:02d}"))
+            tokens.append(("week", week, f"WK{week:02d}", month))
             continue
         m = MONTH_FCST_LABEL_RE.match(text) or MONTH_PLAIN_LABEL_RE.match(text)
         if m:
             month = m.group(1).title()
             year = m.group(2)
-            tokens.append(("month", (year, month), text))
+            tokens.append(("month", (year, month), text, None))
             current_month = None
             continue
-        tokens.append(("other", None, text))
+        tokens.append(("other", None, text, None))
 
     # 第二輪：先補齊同年度、起始週以前的 cache 週欄，再接上版面起始週以後的欄位。
     periods: "OrderedDict[str, list[int]]" = OrderedDict()
@@ -539,7 +539,7 @@ def build_pp_periods(
         periods[f"WK{week:02d}"] = list(weeks[(base_year, week)])
 
     started = False
-    for kind, key, label in tokens:
+    for kind, key, label, source_month in tokens:
         if not started:
             if kind == "week" and key == start_week:
                 started = True
@@ -547,8 +547,20 @@ def build_pp_periods(
                 continue
         if kind == "week":
             idxs = weeks.get((base_year, key), [])
+            if idxs and source_month:
+                idxs = [
+                    idx for idx in idxs
+                    if (
+                        (cache_week := parse_cache_week(normalize_field(fields[idx])))
+                        and cache_week[2] == source_month
+                    )
+                ]
             if not idxs:
-                warn(f"快取中找不到 {base_year}' 年的 WK{key:02d}，該欄以 0 輸出。")
+                period_hint = f"{source_month} " if source_month else ""
+                warn(
+                    f"快取中找不到 {base_year}' 年的 {period_hint}WK{key:02d}，"
+                    "該欄以 0 輸出。"
+                )
             periods.setdefault(label, [])
             for idx in idxs:
                 if idx not in periods[label]:
