@@ -45,7 +45,7 @@
 
 1. 每個客戶資料夾若同時有 CTB 所需來源 sheet，且本次 `DPS+PP.xlsx` 成功產出，會額外產出 `CTB.xlsx`。
 2. `BOM1` 用來把 `DPS+PP` 的成品需求依 `USE` 展開成子件需求。
-3. `Shortage` 用來取得 `QN` 欄，也就是來源檔的 `Overshortage1`，作為 CTB 的 `OVER SHORTAGE` / balance 起始 shortage 基準。
+3. `Shortage` 用來取得 shortage 起始值；程式會先依欄名尋找 `Overshortage1` / `Over shortage` / `overshortage`，再找 `OVER_SHORTAGE` / `Over Shortage`，最後才 fallback 到固定 `QN` 欄。
 4. `open po` 用 `Item + Supplier Site` 產生 key，對應 `Quantity Due` 與 `Need By Date`，產出 ETA / PO Remain 列。
 5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
 6. ETA 日期會依 `open po` 的 `Need By Date` 放到相同或下一個可用期間欄；若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
@@ -302,11 +302,11 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | CTB 來源完整性 | 若完全沒有 CTB 來源 sheet，程式不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因 |
 | BOM1 | 來源檔需有 `BOM1` sheet，且表頭需有 `Child P/N`、`USE`；程式用 Child P/N 前一欄作為成品料號欄 |
 | open po | 來源檔需有 `open po` sheet，且表頭需有 `Item`、`Quantity Due`；若有 `料号+厂商`、`Supplier Site`、`Need By Date` 會一併使用 |
-| Shortage | 來源檔需有 `Shortage` sheet，且表頭需有 `Part No`；程式固定優先讀取 `QN` 欄作為 `OVER SHORTAGE` / balance 起始值，並將 `HLD`、`BOR MM`、`PO_REMAIN` 等欄位寫入輔助頁供追溯 |
+| Shortage | 來源檔需有 `Shortage` sheet，且表頭需有 `Part No`；程式會先依欄名尋找 `Overshortage1` / `Over shortage` / `overshortage`，再找 `OVER_SHORTAGE` / `Over Shortage`，最後才 fallback 到固定 `QN` 欄作為 `OVER SHORTAGE` / balance 起始值，並將 `HLD`、`BOR MM`、`PO_REMAIN` 等欄位寫入輔助頁供追溯 |
 | 原始 CTB | 可選。若來源檔有 `CTB` sheet，輸出會套用它的表頭、日期欄、列順序與格式；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
 | Demand | `DPS+PP` 成品需求 × `BOM1` USE，依子件料號彙總 |
 | ETA | `open po` 的 `Quantity Due` 依 `Need By Date` 放到相同或下一個可用期間欄 |
-| Balance | 使用 `Shortage!QN` 作起始 shortage 基準，再逐期加 ETA、扣 Demand / other |
+| Balance | 使用 Shortage 來源欄位作起始 shortage 基準，再逐期加 ETA、扣 Demand / other |
 
 CTB A:M 欄位目前依下列規則輸出：
 
@@ -319,7 +319,7 @@ CTB A:M 欄位目前依下列規則輸出：
 | E Code | ETA row 取 `open po` 的 `Supplier Site`；找不到來源則空白 |
 | F vendor | 只有在 `BOM1` vendor 是乾淨來源時填入；若 vendor 是反查 CTB 的公式或找不到來源，則空白 |
 | G / H / I | 保留欄位與 title，資料列空白 |
-| J OVER SHORTAGE | Balance row 取 `Shortage` sheet 的 `QN` 欄 |
+| J OVER SHORTAGE | Balance row 取 Shortage 來源欄位；優先依欄名找 `Overshortage1` / `Over shortage` / `overshortage`，最後才 fallback 到 `QN` |
 | K PO Remain | ETA row 加總同 key 的 `open po` Quantity Due；Balance row 依 balance 公式邏輯計算 |
 | L total | ETA row 加總該 row 的 ETA 日期區數量；其他 row 依目前計算邏輯留空或重算 |
 | M ETA目標 | 保留 row type，例如 `Demand` / `ETA` / `other` / `Balance1` |

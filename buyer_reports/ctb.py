@@ -280,6 +280,17 @@ def _find_col(headers: dict[str, int], aliases: Sequence[str]) -> int | None:
     return None
 
 
+def _find_shortage_over_col(headers: dict[str, int], ws) -> int | None:
+    preferred_col = _find_col(headers, ["Overshortage1", "Over shortage", "overshortage"])
+    if preferred_col is not None:
+        return preferred_col
+    fallback_col = _find_col(headers, ["OVER_SHORTAGE", "Over Shortage"])
+    if fallback_col is not None:
+        return fallback_col
+    qn_col = column_index_from_string("QN")
+    return qn_col if ws.max_column >= qn_col else None
+
+
 def read_bom_rows(
     bom_path: Path,
     periods: Sequence[Period],
@@ -363,10 +374,10 @@ def read_shortage(shortage_path: Path) -> dict[str, ShortageRecord]:
         lead_time_col = _find_col(headers, ["LT", "Lead Time"])
         po_remain_col = _find_col(headers, ["PO_REMAIN", "Po Remain"])
         qn_col = column_index_from_string("QN") if ws.max_column >= column_index_from_string("QN") else None
-        over_col = qn_col or _find_col(headers, ["Overshortage1"]) or _find_col(headers, ["OVER_SHORTAGE", "Over Shortage"])
+        over_col = _find_shortage_over_col(headers, ws)
         hld_col = _find_col(headers, ["HLD"])
         bor_col = _find_col(headers, ["BOR MM"])
-        overshortage1_col = qn_col or _find_col(headers, ["Overshortage1"])
+        overshortage1_col = _find_col(headers, ["Overshortage1", "overshortage"]) or qn_col
 
         records = {}
         for row_idx in range(header_row + 1, ws.max_row + 1):
