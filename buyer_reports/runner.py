@@ -33,6 +33,13 @@ from .common import (
     write_traceback,
 )
 from .compare import compare
+from .ctb import (
+    CTB_OUTPUT_NAME,
+    find_optional_workbook_with_sheet,
+    find_workbook_with_sheet,
+    generate_ctb,
+    has_ctb_input_candidates,
+)
 from .dps import (
     DPS_COMPARE_SHEETS,
     DPS_PART_NUMBER_HEADERS,
@@ -101,7 +108,7 @@ def find_input(input_dir: Path, patterns: Sequence[str], kind: str) -> Path:
 
 def build_parser(project_root: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="由 DPS / PP 原始資料生成整理後報表（數值一律以原始檔為準）。",
+        description="由 DPS / PP / CTB 原始資料生成買方報表（數值一律以原始檔為準）。",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--input-dir", type=Path, default=project_root / "input",
@@ -115,6 +122,7 @@ def build_parser(project_root: Path) -> argparse.ArgumentParser:
     parser.add_argument("--skip-dps", action="store_true", help="不產生 DPS 報表")
     parser.add_argument("--skip-pp", action="store_true", help="不產生 PP 報表")
     parser.add_argument("--skip-dps-pp", action="store_true", help="不產生 DPS+PP 報表")
+    parser.add_argument("--skip-ctb", action="store_true", help="不產生 CTB 報表")
 
     parser.add_argument("--include-star-parts", action="store_true",
                         help="保留結尾帶 * 的 DPS 料號（預設排除，與人工整理規則一致）")
@@ -887,6 +895,88 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
     }
 
 
+def run_ctb_report(args, context: RunContext, progress: Progress | None = None) -> dict:
+    out_path = context.out_dir / CTB_OUTPUT_NAME
+    dps_pp_path = context.out_dir / DPS_PP_OUTPUT_NAME
+    title = f"{context.label} CTB" if context.name else "CTB"
+    context.out_dir.mkdir(parents=True, exist_ok=True)
+    if progress is not None:
+        progress.step(f"{title}: 檢查來源")
+
+    try:
+        if not dps_pp_path.is_file():
+            raise SystemExit(f"找不到 {dps_pp_path}，請先成功產出 DPS+PP.xlsx")
+        bom_path = find_workbook_with_sheet(context.input_dir, "BOM1", f"{title} BOM1")
+        open_po_path = find_workbook_with_sheet(context.input_dir, "open po", f"{title} open po")
+        shortage_path = find_workbook_with_sheet(context.input_dir, "Shortage", f"{title} Shortage")
+        template_path = find_optional_workbook_with_sheet(context.input_dir, "CTB")
+        if progress is not None:
+            progress.step(f"{title}: 產出報表")
+        info = generate_ctb(
+            dps_pp_path=dps_pp_path,
+            bom_path=bom_path,
+            open_po_path=open_po_path,
+            shortage_path=shortage_path,
+            output_path=out_path,
+            template_path=template_path,
+        )
+        log(f"\n--- {title} ---")
+        log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
+        log(f"  BOM1 來源       ：{info['bom_source'].name}")
+        log(f"  open po 來源    ：{info['open_po_source'].name}")
+        log(f"  Shortage 來源   ：{info['shortage_source'].name}")
+        if info.get("template_source") is not None:
+            log(f"  CTB 版型來源    ：{info['template_source'].name}（只沿用列結構與格式，數值重算）")
+        else:
+            log("  CTB 版型來源    ：未提供，使用程式新建版面")
+        log(
+            f"  輸入資料        ：BOM {info['bom_rows']} 列，"
+            f"Shortage {info['shortage_rows']} 列，"
+            f"open po {info['open_po_rows']} 列"
+        )
+        other_rows_text = (
+            f"，other {info['other_rows']} 列"
+            if info.get("other_rows") is not None
+            else ""
+        )
+        template_rows_text = (
+            f"，版型 {info['template_rows']} 列"
+            if info.get("template_rows") is not None
+            else ""
+        )
+        log(
+            f"  輸出            ：{info['parts']} 個料號，"
+            f"Demand {info['demand_rows']} 列，"
+            f"ETA {info['eta_rows']} 列"
+            f"{other_rows_text}，"
+            f"Balance {info['balance_rows']} 列，"
+            f"期間 {info['periods']} 欄"
+            f"{template_rows_text}"
+        )
+        log("  ETA 日期規則    ：依 open po Need By Date 放入相同或下一個可用期間欄")
+        log(f"  產出檔          ：{out_path}")
+        if args.compare:
+            warn(f"{title} 目前尚未支援 CTB 逐格對帳，已略過 --compare。")
+        return {
+            "customer": context.name,
+            "kind": "CTB",
+            "ok": True,
+            "output": out_path,
+        }
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一客戶 CTB 失敗不阻斷其他報表
+        if progress is not None:
+            progress.step(f"{title}: 略過報表")
+        warn(f"{title} 無法產出，已略過。原因：{_error_message(exc)}")
+        return {
+            "customer": context.name,
+            "kind": "CTB",
+            "ok": False,
+            "error": _error_message(exc),
+            "output": out_path,
+            "stale_output": out_path.exists(),
+        }
+
+
 def run_reports(args) -> bool:
     args.input_dir.mkdir(parents=True, exist_ok=True)
     contexts = build_run_contexts(args)
@@ -935,11 +1025,35 @@ def run_reports(args) -> bool:
             tasks.append((context, "PP", run_pp_report))
         if not args.skip_dps and not args.skip_pp and not args.skip_dps_pp:
             tasks.append((context, "DPS+PP", run_dps_pp_report))
+        if (
+            not args.skip_ctb
+            and not args.skip_dps
+            and not args.skip_pp
+            and not args.skip_dps_pp
+            and has_ctb_input_candidates(context.input_dir)
+        ):
+            tasks.append((context, "CTB", run_ctb_report))
 
     results = []
+    success_by_context_kind = {}
     with Progress(total=len(tasks) * 2) as progress:
         for context, _name, runner in tasks:
-            results.append(runner(args, context, progress))
+            if runner is run_ctb_report and not success_by_context_kind.get((context.name, "DPS+PP")):
+                if progress is not None:
+                    progress.step(f"{context.label} CTB: 檢查來源")
+                    progress.step(f"{context.label} CTB: 略過報表")
+                result = {
+                    "customer": context.name,
+                    "kind": "CTB",
+                    "ok": False,
+                    "error": "本次 DPS+PP 未成功產出，已略過 CTB，避免使用舊檔。",
+                    "output": context.out_dir / CTB_OUTPUT_NAME,
+                    "stale_output": (context.out_dir / CTB_OUTPUT_NAME).exists(),
+                }
+            else:
+                result = runner(args, context, progress)
+            results.append(result)
+            success_by_context_kind[(context.name, result["kind"])] = result["ok"]
 
     log("\n--- 執行摘要 ---")
     for result in results:

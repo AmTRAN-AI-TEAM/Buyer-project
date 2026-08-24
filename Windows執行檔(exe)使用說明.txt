@@ -33,6 +33,17 @@ DPS+PP：
 6. DPS 若在 PP 接續週含之後仍有數字，會併入 DPS 保留週的最後一天。
 7. 若來源檔內有 BOM1 工作表，程式會用 BOM1 的 B 欄料號對應 H 欄 vendor 寫入 BOM；若沒有，BOM 欄留空。
 
+CTB：
+1. 同一個客戶資料夾內若有 BOM1、open po、Shortage 工作表，且本次 DPS+PP.xlsx 成功產出，會額外產出 CTB.xlsx。
+2. BOM1 用來將 DPS+PP 的成品需求依 USE 展開成子件需求。
+3. Shortage 用來取得 QN 欄，也就是來源檔的 Overshortage1，作為 CTB 的 OVER SHORTAGE / balance 起始 shortage 基準。
+4. open po 用 Item + Supplier Site 產生 key，對應 Quantity Due 與 Need By Date，產出 ETA / PO Remain 列。
+5. CTB 的 D 欄 key 由 C 欄 Part No + E 欄 Code 組成；E 欄 Code 來自 open po 的 Supplier Site。
+6. ETA 日期會依 open po 的 Need By Date 放到相同或下一個可用期間欄；若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
+7. Balance 由程式逐期計算：上一期 balance + 上一期 ETA - 本期 demand - 本期 other。
+8. 若同一個客戶資料夾內有原始 CTB 工作表，程式會沿用該 CTB 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 CTB，仍會用程式新建版面產出。
+9. CTB A:M 欄位規則：A/G/H/I 保留欄位但資料列空白；B 由 BOM1 的 Model+USE 組成，找不到來源則空白；D= C+E；E 取 open po 的 Supplier Site；F 只有在 BOM1 vendor 是乾淨來源時填入，若是反查 CTB 的公式或找不到來源則空白；J 取 Shortage 的 QN 欄；M 保留 Demand / ETA / other / Balance 等 row type。
+
 二、資料夾結構
 
 請保持整個 BuyerReports 資料夾放在一起，不要只單獨移動 exe。
@@ -65,6 +76,7 @@ BuyerReports/
    - RAKEN 檔案放進 input/RAKEN
    - DPS 檔名需包含 DPS
    - PP 檔名需包含 PP
+   - 若要產 CTB，同一個客戶資料夾也需有含 BOM1、open po、Shortage 工作表的 Excel
 
 4. 關閉已開啟的輸出檔，避免 Excel 鎖住檔案。
 
@@ -78,9 +90,11 @@ BuyerReports/
    - output/AVTC/DPS整理後.xlsx
    - output/AVTC/PP整理後.xlsx
    - output/AVTC/DPS+PP.xlsx
+   - output/AVTC/CTB.xlsx
    - output/RAKEN/DPS整理後.xlsx
    - output/RAKEN/PP整理後.xlsx
    - output/RAKEN/DPS+PP.xlsx
+   - output/RAKEN/CTB.xlsx
    實際會產出哪些檔案，取決於該客戶資料夾內是否有對應來源檔。
 
 7. 每次執行都會在對應的客戶 output 資料夾產生 log，例如 output/RAKEN/log。
@@ -137,12 +151,14 @@ dps_trim_trailing_zero_dates = true 代表 DPS 輸出只列到最後一個有非
 dps_pp_dps_weeks_ahead 代表 DPS+PP 中 DPS 要保留幾週，會包含目前 buyer week；目前 buyer week 在自動模式下會套用週五提前使用下一週的規則。
 Windows exe 雙擊執行時，RAKEN 的 dps_pp_dps_weeks_ahead 可由啟動畫面選擇 2 / 3 / 4 週，該次執行會以視窗選擇為準，不需修改 buyer_reports.ini。
 
-輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。total 由程式先計算好，不使用 Excel 公式。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。
+輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。total 由程式先計算好，不使用 Excel 公式。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。CTB 會輸出 CTB、DPS+PP、BOM1、over shortage、open po 五張工作表，方便追溯；有原始 CTB 時會套用其表頭、日期欄、列結構與格式，但 A:M 資料列會由程式依 BOM1、open po、Shortage QN 重建；沒有原始 CTB 時仍可新建 CTB。
 
 五、常見問題
 
-1. 找不到 DPS 或 PP 檔案
-   請確認檔案已放在 input/AVTC 或 input/RAKEN，且檔名包含 DPS 或 PP。
+1. 找不到 DPS、PP 或 CTB 來源檔
+   請確認檔案已放在 input/AVTC 或 input/RAKEN，且 DPS 檔名包含 DPS、PP 檔名包含 PP。
+   若要產 CTB，該客戶資料夾需另外有 BOM1、open po、Shortage 工作表。
+   若完全沒有 CTB 來源 sheet，工具只會產出 DPS、PP、DPS+PP，不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因。
 
 2. Windows 顯示「無法訪問指定設備、路徑或文件」
    請確認不是在 zip 壓縮檔視窗內直接執行。請先完整解壓縮，再到解壓後的 BuyerReports 資料夾內執行。

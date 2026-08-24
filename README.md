@@ -1,6 +1,6 @@
 # Buyer Reports 自動整理工具
 
-由 **DPS 來源工作表** 與 **PP 樞紐快取** 自動生成「整理後」與 `DPS+PP` 報表。
+由 **DPS 來源工作表** 與 **PP 樞紐快取** 自動生成「整理後」、`DPS+PP` 與 `CTB` 報表。
 數值一律以原始檔為唯一來源，人工整理版只在 `--compare` 模式下用來對帳。
 目前支援 AVTC / RAKEN 兩組輸入資料夾；RAKEN 的 DPS 會合併多份 DPS 檔，
 同料號同日期累加。
@@ -41,6 +41,17 @@
 7. PP 接續週開始後的週欄與月 FCST 欄會沿用 PP pivot cache 的數字。
 8. 若來源檔內有 `BOM1` 工作表，程式會用 `BOM1` 的 B 欄料號對應 H 欄 vendor 寫入 `BOM`；若沒有，`BOM` 欄留空。
 
+### CTB
+
+1. 每個客戶資料夾若同時有 CTB 所需來源 sheet，且本次 `DPS+PP.xlsx` 成功產出，會額外產出 `CTB.xlsx`。
+2. `BOM1` 用來把 `DPS+PP` 的成品需求依 `USE` 展開成子件需求。
+3. `Shortage` 用來取得 `QN` 欄，也就是來源檔的 `Overshortage1`，作為 CTB 的 `OVER SHORTAGE` / balance 起始 shortage 基準。
+4. `open po` 用 `Item + Supplier Site` 產生 key，對應 `Quantity Due` 與 `Need By Date`，產出 ETA / PO Remain 列。
+5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
+6. ETA 日期會依 `open po` 的 `Need By Date` 放到相同或下一個可用期間欄；若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
+7. Balance 由程式逐期計算：上一期 balance + 上一期 ETA - 本期 demand - 本期 other。
+8. 若同一客戶資料夾內另有原始 `CTB` sheet，程式會沿用該 sheet 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 `CTB` sheet，仍會使用程式新建版面輸出。
+
 ## 目錄結構
 
 ```
@@ -53,24 +64,31 @@ buyer-reports/
 │   ├── dps.py                  # DPS 解析與輸出
 │   ├── pp.py                   # PP 樞紐快取解析、期間推導與輸出
 │   ├── dps_pp.py               # DPS+PP 整合輸出
+│   ├── ctb.py                  # CTB 整合輸出
 │   ├── compare.py              # 對帳工具
 │   └── runner.py               # CLI、找檔與執行流程
 ├── input/                      # 輸入：把來源 Excel 放這裡
 │   ├── AVTC/
 │   │   ├── AVTC 的 DPS 檔
-│   │   └── AVTC 的 PP 檔
+│   │   ├── AVTC 的 PP 檔
+│   │   ├── 含 BOM1 / open po 的檔案（若要產 CTB）
+│   │   └── 含 Shortage 的檔案（若要產 CTB）
 │   └── RAKEN/
 │       ├── RAKEN 的 DPS 檔，可放多份
-│       └── RAKEN 的 PP 檔
+│       ├── RAKEN 的 PP 檔
+│       ├── 含 BOM1 / open po 的檔案（若要產 CTB）
+│       └── 含 Shortage 的檔案（若要產 CTB）
 ├── output/                     # 輸出：執行時自動建立（已列入 .gitignore）
 │   ├── AVTC/
 │   │   ├── DPS整理後.xlsx
 │   │   ├── PP整理後.xlsx
-│   │   └── DPS+PP.xlsx
+│   │   ├── DPS+PP.xlsx
+│   │   └── CTB.xlsx
 │   └── RAKEN/
 │       ├── DPS整理後.xlsx
 │       ├── PP整理後.xlsx
-│       └── DPS+PP.xlsx
+│       ├── DPS+PP.xlsx
+│       └── CTB.xlsx
 ├── requirements.txt
 ├── Windows執行檔(exe)使用說明.txt
 └── README.md
@@ -95,6 +113,8 @@ RAKEN DPS 會把所有格式正確的 DPS 檔合併，格式不符的檔案會�
 每次執行都會在本次處理的客戶輸出資料夾寫入 `log`，例如
 `output/RAKEN/log`，方便回查成功訊息或錯誤原因。
 同一客戶同時有可用 DPS 與 PP 時，還會額外產出 `DPS+PP.xlsx`。
+若同一客戶資料夾也有 `BOM1`、`open po`、`Shortage` 工作表，會再產出 `CTB.xlsx`。
+若完全沒有 CTB 來源 sheet，程式只會產出 DPS / PP / DPS+PP，不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因。
 
 ## 偵測關鍵字設定
 
@@ -177,6 +197,7 @@ BuyerReports/
 再雙擊 `BuyerReports.exe`。完成後到 `output/AVTC/`、`output/RAKEN/`
 取得各自的 `DPS整理後.xlsx` 與 `PP整理後.xlsx`。
 若 DPS 與 PP 來源都可用，也會產出 `DPS+PP.xlsx`。
+若該客戶資料夾內另有 `BOM1`、`open po`、`Shortage` 工作表，也會產出 `CTB.xlsx`。
 若 `input/RAKEN/` 內有 Excel，exe 啟動後會先跳出 RAKEN `DPS+PP` 的 DPS 保留週數選擇視窗，
 可選含本週共 2 / 3 / 4 週；這只影響 `output/RAKEN/DPS+PP.xlsx`。
 exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用；
@@ -271,13 +292,45 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | BOM | 若來源檔有 `BOM1`，用 B 欄料號對應 H 欄 vendor；沒有則留空 |
 | total | 由程式加總整份 `DPS+PP` 期間欄，以數值寫入 |
 
+### CTB
+
+`CTB.xlsx` 會以同一客戶資料夾內的來源 sheet 產出，不限定 AVTC 或 RAKEN。
+
+| 項目 | 規則 |
+|---|---|
+| DPS+PP | 必須先在本次執行成功產出 `output/<客戶>/DPS+PP.xlsx` |
+| CTB 來源完整性 | 若完全沒有 CTB 來源 sheet，程式不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因 |
+| BOM1 | 來源檔需有 `BOM1` sheet，且表頭需有 `Child P/N`、`USE`；程式用 Child P/N 前一欄作為成品料號欄 |
+| open po | 來源檔需有 `open po` sheet，且表頭需有 `Item`、`Quantity Due`；若有 `料号+厂商`、`Supplier Site`、`Need By Date` 會一併使用 |
+| Shortage | 來源檔需有 `Shortage` sheet，且表頭需有 `Part No`；程式固定優先讀取 `QN` 欄作為 `OVER SHORTAGE` / balance 起始值，並將 `HLD`、`BOR MM`、`PO_REMAIN` 等欄位寫入輔助頁供追溯 |
+| 原始 CTB | 可選。若來源檔有 `CTB` sheet，輸出會套用它的表頭、日期欄、列順序與格式；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
+| Demand | `DPS+PP` 成品需求 × `BOM1` USE，依子件料號彙總 |
+| ETA | `open po` 的 `Quantity Due` 依 `Need By Date` 放到相同或下一個可用期間欄 |
+| Balance | 使用 `Shortage!QN` 作起始 shortage 基準，再逐期加 ETA、扣 Demand / other |
+
+CTB A:M 欄位目前依下列規則輸出：
+
+| 欄位 | 規則 |
+|---|---|
+| A Category | 保留欄位與 title，資料列空白 |
+| B model | 由同一個 `BOM1` child part 的 `Model + USE` 組成，例如 `32C*1/32J*1`；找不到來源則空白 |
+| C Part No | CTB row 的主料號 / 子件料號 |
+| D key | ETA row 使用 `C + E`，用來對 `open po` 的 A 欄 key |
+| E Code | ETA row 取 `open po` 的 `Supplier Site`；找不到來源則空白 |
+| F vendor | 只有在 `BOM1` vendor 是乾淨來源時填入；若 vendor 是反查 CTB 的公式或找不到來源，則空白 |
+| G / H / I | 保留欄位與 title，資料列空白 |
+| J OVER SHORTAGE | Balance row 取 `Shortage` sheet 的 `QN` 欄 |
+| K PO Remain | ETA row 加總同 key 的 `open po` Quantity Due；Balance row 依 balance 公式邏輯計算 |
+| L total | ETA row 加總該 row 的 ETA 日期區數量；其他 row 依目前計算邏輯留空或重算 |
+| M ETA目標 | 保留 row type，例如 `Demand` / `ETA` / `other` / `Balance1` |
+
 ## 常用參數
 
 | 參數 | 說明 |
 |---|---|
 | `--input-dir` / `--out-dir` | 輸入 / 輸出資料夾 |
 | `--dps` / `--pp` | 明確指定來源檔 |
-| `--skip-dps` / `--skip-pp` / `--skip-dps-pp` | 略過指定報表 |
+| `--skip-dps` / `--skip-pp` / `--skip-dps-pp` / `--skip-ctb` | 略過指定報表 |
 | `--include-star-parts` | 保留結尾帶 `*` 的 DPS 料號 |
 | `--dps-tail-cutoff` | `auto` / `none` / `YYYY-MM-DD` |
 | `--pp-plan` | Plan 篩選值，預設 `Production Input` |
