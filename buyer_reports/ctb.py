@@ -35,6 +35,27 @@ CTB_OPEN_PO_SHEET = "open po"
 CTB_DPS_PP_SHEET = "DPS+PP"
 CTB_ROW_TYPE_COL = 13
 CTB_FIRST_PERIOD_COL = 14
+WEEKDAY_LABELS = {
+    "mon",
+    "monday",
+    "tue",
+    "tues",
+    "tuesday",
+    "wed",
+    "wednesday",
+    "thu",
+    "thur",
+    "thurs",
+    "thursday",
+    "fri",
+    "friday",
+    "sat",
+    "saturday",
+    "sun",
+    "sunday",
+}
+MONTH_PERIOD_KEY_RE = re.compile(r"^[a-z]{3}\d{2}(?:fcst)?$")
+WEEK_PERIOD_KEY_RE = re.compile(r"^wk\d{1,2}$")
 
 
 @dataclass(frozen=True)
@@ -907,20 +928,77 @@ def _template_part_for_row(
     )
 
 
+def _compact_period_text(value: str) -> str:
+    return re.sub(r"[^0-9a-z]+", "", str(value).strip().casefold())
+
+
+def _is_by_day_period(period: Period) -> bool:
+    return normalize_label(period.header3) in WEEKDAY_LABELS
+
+
+def _month_period_key(period: Period) -> str | None:
+    for text in (period.header2, period.label, period.header4):
+        key = _compact_period_text(text)
+        if MONTH_PERIOD_KEY_RE.match(key):
+            return key.removesuffix("fcst")
+    return None
+
+
+def _week_period_key(period: Period) -> str | None:
+    if _is_by_day_period(period):
+        return None
+    for text in (period.header2, period.label):
+        key = _compact_period_text(text)
+        if WEEK_PERIOD_KEY_RE.match(key):
+            return key
+    return None
+
+
 def _values_for_template_periods(
     source_periods: Sequence[Period],
     source_values: Sequence[float],
     template_periods: Sequence[Period],
 ) -> list[float]:
-    source_by_date = {
-        period.start: idx
-        for idx, period in enumerate(source_periods)
-        if period.start is not None and idx < len(source_values)
-    }
+    source_by_date: dict[dt.date, float] = {}
+    source_month: dict[str, float] = {}
+    source_week: dict[str, float] = {}
+    source_days: list[tuple[dt.date, float]] = []
+    for idx, period in enumerate(source_periods):
+        if idx >= len(source_values):
+            continue
+        value = source_values[idx]
+        month_key = _month_period_key(period)
+        if month_key:
+            source_month[month_key] = source_month.get(month_key, 0.0) + value
+            continue
+        week_key = _week_period_key(period)
+        if week_key:
+            source_week[week_key] = source_week.get(week_key, 0.0) + value
+            continue
+        if period.start is not None:
+            source_by_date[period.start] = source_by_date.get(period.start, 0.0) + value
+            if _is_by_day_period(period):
+                source_days.append((period.start, value))
+
     values = []
     for period in template_periods:
-        idx = source_by_date.get(period.start)
-        values.append(source_values[idx] if idx is not None else 0.0)
+        month_key = _month_period_key(period)
+        if month_key:
+            values.append(source_month.get(month_key, 0.0))
+            continue
+        week_key = _week_period_key(period)
+        if week_key:
+            if week_key in source_week:
+                values.append(source_week[week_key])
+            elif period.start is not None:
+                period_end = period.start + dt.timedelta(days=6)
+                values.append(
+                    sum(value for date, value in source_days if period.start <= date <= period_end)
+                )
+            else:
+                values.append(0.0)
+            continue
+        values.append(source_by_date.get(period.start, 0.0) if period.start is not None else 0.0)
     return values
 
 
@@ -978,12 +1056,31 @@ def _write_template_eta_static(ws, row_idx: int, record: OpenPoRecord | None) ->
 def _formula_sum_col_range(formula) -> tuple[int, int] | None:
     if not isinstance(formula, str):
         return None
-    match = re.search(r"SUM\(\$?([A-Z]+)\$?\d+:\$?([A-Z]+)\$?\d+\)", formula, re.IGNORECASE)
+    match = re.search(
+        r"(?:SUM|SUBTOTAL)\(\s*(?:\d+\s*,\s*)?\$?([A-Z]+)\$?\d+:\$?([A-Z]+)\$?\d+",
+        formula,
+        re.IGNORECASE,
+    )
     if match is None:
         return None
     return (
         column_index_from_string(match.group(1)),
         column_index_from_string(match.group(2)),
+    )
+
+
+def _sum_period_values_for_col_range(
+    period_columns: Sequence[tuple[int, Period]],
+    values: Sequence[float],
+    col_range: tuple[int, int] | None,
+) -> float:
+    if col_range is None:
+        return sum(values)
+    start_col, end_col = col_range
+    return sum(
+        values[idx]
+        for idx, (col, _period) in enumerate(period_columns)
+        if idx < len(values) and start_col <= col <= end_col
     )
 
 
@@ -1006,28 +1103,9 @@ def _period_index_for_column(period_columns: Sequence[tuple[int, Period]], targe
 
 
 def _last_by_day_period_index(period_columns: Sequence[tuple[int, Period]]) -> int | None:
-    weekday_labels = {
-        "mon",
-        "monday",
-        "tue",
-        "tues",
-        "tuesday",
-        "wed",
-        "wednesday",
-        "thu",
-        "thur",
-        "thurs",
-        "thursday",
-        "fri",
-        "friday",
-        "sat",
-        "saturday",
-        "sun",
-        "sunday",
-    }
     last_idx = None
     for idx, (_col, period) in enumerate(period_columns):
-        if normalize_label(period.header3) in weekday_labels:
+        if _is_by_day_period(period):
             last_idx = idx
     return last_idx
 
@@ -1096,7 +1174,9 @@ def _process_template_group(
             _clear_tail_values(ws, row_idx, first_tail_col)
             demand_col = summary_columns.get("demand")
             if demand_col:
-                write_number_cell(ws.cell(row_idx, demand_col), clean_number(sum(demand_values)))
+                demand_sum_range = _formula_sum_col_range(formula_ws.cell(row_idx, demand_col).value)
+                demand_total = _sum_period_values_for_col_range(period_columns, demand_values, demand_sum_range)
+                write_number_cell(ws.cell(row_idx, demand_col), clean_number(demand_total))
             stats["demand_rows"] += 1
         elif row_type.casefold() == "eta":
             key = _cell_text(ws.cell(row_idx, 4).value)
