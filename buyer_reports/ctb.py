@@ -940,10 +940,17 @@ def _clear_cell(cell) -> None:
     cell.value = None
 
 
-def _write_period_values(ws, row_idx: int, period_columns: Sequence[tuple[int, Period]], values: Sequence[float]) -> None:
+def _write_period_values(
+    ws,
+    row_idx: int,
+    period_columns: Sequence[tuple[int, Period]],
+    values: Sequence[float],
+    *,
+    write_zero: bool = False,
+) -> None:
     for idx, (col, _period) in enumerate(period_columns):
         value = values[idx] if idx < len(values) else 0.0
-        if value:
+        if value or write_zero:
             write_number_cell(ws.cell(row_idx, col), clean_number(value))
 
 
@@ -1085,7 +1092,7 @@ def _process_template_group(
             _clear_cell(ws.cell(row_idx, 10))
             _clear_cell(ws.cell(row_idx, 11))
             _clear_cell(ws.cell(row_idx, 12))
-            _write_period_values(ws, row_idx, period_columns, demand_values)
+            _write_period_values(ws, row_idx, period_columns, demand_values, write_zero=True)
             _clear_tail_values(ws, row_idx, first_tail_col)
             demand_col = summary_columns.get("demand")
             if demand_col:
