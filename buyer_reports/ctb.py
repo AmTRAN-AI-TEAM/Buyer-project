@@ -998,6 +998,33 @@ def _period_index_for_column(period_columns: Sequence[tuple[int, Period]], targe
     return None
 
 
+def _last_by_day_period_index(period_columns: Sequence[tuple[int, Period]]) -> int | None:
+    weekday_labels = {
+        "mon",
+        "monday",
+        "tue",
+        "tues",
+        "tuesday",
+        "wed",
+        "wednesday",
+        "thu",
+        "thur",
+        "thurs",
+        "thursday",
+        "fri",
+        "friday",
+        "sat",
+        "saturday",
+        "sun",
+        "sunday",
+    }
+    last_idx = None
+    for idx, (_col, period) in enumerate(period_columns):
+        if normalize_label(period.header3) in weekday_labels:
+            last_idx = idx
+    return last_idx
+
+
 def _calculate_template_balance(
     period_columns: Sequence[tuple[int, Period]],
     demand: Sequence[float],
@@ -1049,6 +1076,7 @@ def _process_template_group(
     other_total_by_period = [0.0] * len(template_periods)
     stats = {"demand_rows": 0, "eta_rows": 0, "other_rows": 0, "balance_rows": 0}
     first_tail_col = period_columns[-1][0] + 1 if period_columns else ws.max_column + 1
+    po_remain_period_idx = _last_by_day_period_index(period_columns)
 
     for row_idx in group_rows:
         row_type = _ctb_row_type(ws, row_idx)
@@ -1104,8 +1132,10 @@ def _process_template_group(
         )
         _write_template_part_static(ws, row_idx, part, row_type)
         write_number_cell(ws.cell(row_idx, 10), clean_number(shortage_value))
-        po_remain_ref_col = _formula_negative_ref_col(formula_ws.cell(row_idx, 11).value)
-        po_remain_idx = _period_index_for_column(period_columns, po_remain_ref_col)
+        po_remain_idx = po_remain_period_idx
+        if po_remain_idx is None:
+            po_remain_ref_col = _formula_negative_ref_col(formula_ws.cell(row_idx, 11).value)
+            po_remain_idx = _period_index_for_column(period_columns, po_remain_ref_col)
         if po_remain_idx is not None and po_remain_idx < len(balance_values):
             write_number_cell(ws.cell(row_idx, 11), clean_number(shortage_value - balance_values[po_remain_idx]))
         elif part.shortage is not None:

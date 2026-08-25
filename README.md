@@ -320,7 +320,7 @@ CTB A:M 欄位目前依下列規則輸出：
 | F vendor | 只有在 `BOM1` vendor 是乾淨來源時填入；若 vendor 是反查 CTB 的公式或找不到來源，則空白 |
 | G / H / I | 保留欄位與 title，資料列空白 |
 | J OVER SHORTAGE | Balance row 取 Shortage 來源欄位；優先依欄名找 `Overshortage1` / `Over shortage` / `overshortage`，最後才 fallback 到 `QN` |
-| K PO Remain | ETA row 加總同 key 的 `open po` Quantity Due；Balance row 依 balance 公式邏輯計算 |
+| K PO Remain | ETA row 加總同 key 的 `open po` Quantity Due；Balance row 使用 `J OVER SHORTAGE - by-day 最後一天的 Balance` 計算，偵測不到 by-day 最後一天時才 fallback 到原 CTB 公式引用欄 |
 | L total | ETA row 加總該 row 的 ETA 日期區數量；其他 row 依目前計算邏輯留空或重算 |
 | M ETA目標 | 保留 row type，例如 `Demand` / `ETA` / `other` / `Balance1` |
 
