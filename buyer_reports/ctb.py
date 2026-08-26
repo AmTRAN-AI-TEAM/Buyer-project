@@ -562,9 +562,7 @@ def build_part_map(
         part.open_po.append(record)
 
     for part_no, record in shortage.items():
-        part = parts.get(part_no)
-        if part is None:
-            continue
+        part = get_part(part_no)
         part.shortage = record
         if not part.category:
             part.category = record.description
@@ -715,7 +713,14 @@ def _write_header(ws, periods: Sequence[Period]) -> int:
         write_text_cell(ws.cell(4, col), value)
     start_col = len(static_headers) + 1
     for offset, period in enumerate(periods, start=start_col):
-        if period.start is not None:
+        forecast_label = _forecast_period_label(period)
+        if forecast_label:
+            write_text_cell(ws.cell(1, offset), _month_label(period.start, period.header1))
+            write_text_cell(ws.cell(2, offset), forecast_label)
+            _clear_cell(ws.cell(3, offset))
+            header4 = period.start.isoformat() if period.start else period.header4 or period.label
+            write_text_cell(ws.cell(4, offset), header4)
+        elif period.start is not None:
             write_text_cell(ws.cell(1, offset), _month_label(period.start, period.header1))
             write_text_cell(ws.cell(2, offset), week_label_for_date(period.start))
             write_text_cell(ws.cell(3, offset), period.start.strftime("%a"))
@@ -726,6 +731,13 @@ def _write_header(ws, periods: Sequence[Period]) -> int:
             write_text_cell(ws.cell(3, offset), period.header3)
             write_text_cell(ws.cell(4, offset), period.header4 or period.label)
     return start_col
+
+
+def _write_generated_summary_headers(ws, first_col: int) -> int:
+    write_text_cell(ws.cell(4, first_col), "demand")
+    write_text_cell(ws.cell(4, first_col + 1), "PO")
+    _clear_cell(ws.cell(4, first_col + 2))
+    return first_col + 2
 
 
 def _write_optional_text_cell(cell, value) -> None:
@@ -763,7 +775,10 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
     ws = wb.active
     ws.title = CTB_SHEET
     start_col = _write_header(ws, periods)
-    end_col = start_col + len(periods) - 1
+    last_period_col = start_col + len(periods) - 1
+    end_col = _write_generated_summary_headers(ws, last_period_col + 1)
+    period_columns = [(start_col + idx, period) for idx, period in enumerate(periods)]
+    po_remain_period_idx = _last_by_day_period_index(period_columns)
 
     fills = {
         "Demand": PatternFill("solid", fgColor="EAF4FF"),
@@ -771,15 +786,13 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
         "Balance": PatternFill("solid", fgColor="EAF7EA"),
     }
     row_idx = 5
-    demand_rows = eta_rows = balance_rows = 0
+    demand_rows = eta_rows = other_rows = balance_rows = 0
     for part in parts:
-        total_demand = sum(part.demand)
-        if total_demand or not part.open_po:
-            _write_static_cells(ws, row_idx, part, "Demand")
-            for offset, value in enumerate(part.demand, start=start_col):
-                write_number_cell(ws.cell(row_idx, offset), clean_number(value))
-            demand_rows += 1
-            row_idx += 1
+        _write_static_cells(ws, row_idx, part, "Demand")
+        for offset, value in enumerate(part.demand, start=start_col):
+            write_number_cell(ws.cell(row_idx, offset), clean_number(value))
+        demand_rows += 1
+        row_idx += 1
 
         schedules = eta_schedule_for_records(periods, part.open_po)
         po_by_key: dict[str, OpenPoRecord] = {}
@@ -787,8 +800,11 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
             po_by_key.setdefault(record.key, record)
 
         eta_total_by_period = [0.0] * len(periods)
-        for key, schedule in schedules.items():
-            record = po_by_key[key]
+        eta_items = list(schedules.items())
+        if not eta_items:
+            eta_items = [("", [0.0] * len(periods))]
+        for key, schedule in eta_items:
+            record = po_by_key.get(key)
             _write_static_cells(ws, row_idx, part, "ETA", key=key, po=record)
             key_total = sum(r.quantity_due for r in part.open_po if r.key == key)
             write_number_cell(ws.cell(row_idx, 11), clean_number(key_total))
@@ -799,16 +815,33 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
             eta_rows += 1
             row_idx += 1
 
+        other_total_by_period = [0.0] * len(periods)
+        _write_static_cells(ws, row_idx, part, "other")
+        for offset, value in enumerate(other_total_by_period, start=start_col):
+            write_number_cell(ws.cell(row_idx, offset), clean_number(value))
+        other_rows += 1
+        row_idx += 1
+
         shortage_value = part.shortage.over_shortage if part.shortage else 0.0
         balance = [0.0] * len(periods)
         if periods:
             balance[0] = shortage_value + sum(part.demand[1:])
             for idx in range(1, len(periods)):
-                balance[idx] = balance[idx - 1] + eta_total_by_period[idx - 1] - part.demand[idx]
+                balance[idx] = (
+                    balance[idx - 1]
+                    + eta_total_by_period[idx - 1]
+                    - part.demand[idx]
+                    - other_total_by_period[idx]
+                )
         _write_static_cells(ws, row_idx, part, "Balance")
         if part.shortage:
             write_number_cell(ws.cell(row_idx, 10), clean_number(part.shortage.over_shortage))
-            write_number_cell(ws.cell(row_idx, 11), clean_number(part.shortage.po_remain))
+            po_remain_value = (
+                shortage_value - balance[po_remain_period_idx]
+                if po_remain_period_idx is not None and po_remain_period_idx < len(balance)
+                else part.shortage.po_remain
+            )
+            write_number_cell(ws.cell(row_idx, 11), clean_number(po_remain_value))
         for offset, value in enumerate(balance, start=start_col):
             write_number_cell(ws.cell(row_idx, offset), clean_number(value))
         balance_rows += 1
@@ -826,7 +859,7 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
             for cell in row:
                 cell.fill = fill
 
-    ws.freeze_panes = f"{get_column_letter(start_col)}5"
+    ws.freeze_panes = None
     set_filter_to_used_range(ws, end_col, row_idx - 1)
     autosize(ws, maximum=20)
     ws.column_dimensions["C"].width = 18
@@ -835,6 +868,7 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
         "parts": len(parts),
         "demand_rows": demand_rows,
         "eta_rows": eta_rows,
+        "other_rows": other_rows,
         "balance_rows": balance_rows,
         "periods": len(periods),
     }
@@ -855,7 +889,7 @@ def _copy_template_sheet(source_ws, target_ws) -> None:
 
     for merged_range in source_ws.merged_cells.ranges:
         target_ws.merge_cells(str(merged_range))
-    target_ws.freeze_panes = source_ws.freeze_panes
+    target_ws.freeze_panes = None
     target_ws.auto_filter.ref = source_ws.auto_filter.ref
     target_ws.sheet_view.showGridLines = source_ws.sheet_view.showGridLines
 
@@ -941,6 +975,15 @@ def _month_period_key(period: Period) -> str | None:
         key = _compact_period_text(text)
         if MONTH_PERIOD_KEY_RE.match(key):
             return key.removesuffix("fcst")
+    return None
+
+
+def _forecast_period_label(period: Period) -> str | None:
+    for text in (period.header2, period.label, period.header4):
+        key = _compact_period_text(text)
+        if key.endswith("fcst") and MONTH_PERIOD_KEY_RE.match(key):
+            month_key = key.removesuffix("fcst")
+            return f"{month_key[:3].title()}{month_key[3:]}FCST"
     return None
 
 
