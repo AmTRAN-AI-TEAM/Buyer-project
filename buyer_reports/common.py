@@ -32,18 +32,21 @@ DEFAULT_CUSTOMER_MODES = {
         "dps_mode": "first_valid",
         "pp_mode": "first_valid",
         "dps_pp_dps_weeks_ahead": 5,
+        "dps_pp_late_dps_mode": "merge_to_cutoff",
         "dps_drop_zero_total_rows": False,
         "dps_trim_trailing_zero_dates": False,
     },
     "RAKEN": {
         "dps_mode": "merge_all",
         "pp_mode": "first_valid",
-        "dps_pp_dps_weeks_ahead": 3,
+        "dps_pp_dps_weeks_ahead": 2,
+        "dps_pp_late_dps_mode": "drop",
         "dps_drop_zero_total_rows": True,
         "dps_trim_trailing_zero_dates": True,
     },
 }
 VALID_REPORT_MODES = ("first_valid", "merge_all")
+VALID_DPS_PP_LATE_DPS_MODES = ("merge_to_cutoff", "drop")
 
 # ---------------------------------------------------------------------------
 # 共用小工具
@@ -139,6 +142,28 @@ def parse_report_mode(value: str, fallback: str, label: str) -> str:
     return mode
 
 
+def parse_dps_pp_late_dps_mode(value: str, fallback: str, label: str) -> str:
+    mode = value.strip().lower().replace("-", "_")
+    aliases = {
+        "merge": "merge_to_cutoff",
+        "merge_to_cutoff": "merge_to_cutoff",
+        "cutoff": "merge_to_cutoff",
+        "drop": "drop",
+        "ignore": "drop",
+        "truncate": "drop",
+    }
+    if not mode:
+        return fallback
+    parsed = aliases.get(mode)
+    if parsed is None:
+        warn(
+            f"{label} 設定 {value!r} 不支援，已改用 {fallback!r}。"
+            f"可用模式：{', '.join(VALID_DPS_PP_LATE_DPS_MODES)}"
+        )
+        return fallback
+    return parsed
+
+
 def parse_positive_int(value: str, fallback: int, label: str) -> int:
     try:
         parsed = int(value.strip())
@@ -179,6 +204,9 @@ def load_sheet_detection_config(root: Path) -> dict:
                 "pp_mode": DEFAULT_CUSTOMER_MODES[name]["pp_mode"],
                 "dps_pp_dps_weeks_ahead": DEFAULT_CUSTOMER_MODES[name][
                     "dps_pp_dps_weeks_ahead"
+                ],
+                "dps_pp_late_dps_mode": DEFAULT_CUSTOMER_MODES[name][
+                    "dps_pp_late_dps_mode"
                 ],
                 "dps_drop_zero_total_rows": DEFAULT_CUSTOMER_MODES[name][
                     "dps_drop_zero_total_rows"
@@ -233,6 +261,7 @@ def load_sheet_detection_config(root: Path) -> dict:
                 "dps_mode": "first_valid",
                 "pp_mode": "first_valid",
                 "dps_pp_dps_weeks_ahead": 5,
+                "dps_pp_late_dps_mode": "merge_to_cutoff",
                 "dps_drop_zero_total_rows": False,
                 "dps_trim_trailing_zero_dates": False,
             },
@@ -241,6 +270,7 @@ def load_sheet_detection_config(root: Path) -> dict:
         dps_mode = defaults["dps_mode"]
         pp_mode = defaults["pp_mode"]
         dps_pp_dps_weeks_ahead = defaults["dps_pp_dps_weeks_ahead"]
+        dps_pp_late_dps_mode = defaults["dps_pp_late_dps_mode"]
         dps_drop_zero_total_rows = defaults["dps_drop_zero_total_rows"]
         dps_trim_trailing_zero_dates = defaults["dps_trim_trailing_zero_dates"]
         if section:
@@ -262,6 +292,15 @@ def load_sheet_detection_config(root: Path) -> dict:
                 ),
                 defaults["dps_pp_dps_weeks_ahead"],
                 f"{name} DPS+PP 的 DPS 保留週數",
+            )
+            dps_pp_late_dps_mode = parse_dps_pp_late_dps_mode(
+                parser.get(
+                    section,
+                    "dps_pp_late_dps_mode",
+                    fallback=dps_pp_late_dps_mode,
+                ),
+                defaults["dps_pp_late_dps_mode"],
+                f"{name} DPS+PP 截止日後 DPS 處理模式",
             )
             dps_drop_zero_total_rows = parse_bool(
                 parser.get(
@@ -286,6 +325,7 @@ def load_sheet_detection_config(root: Path) -> dict:
             "dps_mode": dps_mode,
             "pp_mode": pp_mode,
             "dps_pp_dps_weeks_ahead": dps_pp_dps_weeks_ahead,
+            "dps_pp_late_dps_mode": dps_pp_late_dps_mode,
             "dps_drop_zero_total_rows": dps_drop_zero_total_rows,
             "dps_trim_trailing_zero_dates": dps_trim_trailing_zero_dates,
         })

@@ -63,6 +63,7 @@ class RunContext:
     pp_mode: str
     dps_pp_dps_weeks_ahead: int
     dps_pp_dps_weeks_source: str
+    dps_pp_late_dps_mode: str
     dps_drop_zero_total_rows: bool
     dps_trim_trailing_zero_dates: bool
     legacy: bool = False
@@ -70,6 +71,14 @@ class RunContext:
     @property
     def label(self) -> str:
         return self.name if self.name else "預設"
+
+
+def late_dps_mode_label(mode: str) -> str:
+    if mode == "drop":
+        return "截止日後排除，由 PP 接續"
+    if mode == "merge_to_cutoff":
+        return "截止日後併入 DPS 最後一天"
+    return mode
 
 
 def find_input_candidates(
@@ -282,7 +291,7 @@ def apply_raken_dps_pp_weeks_selection(args) -> None:
             for customer in args.customers
             if customer["name"].casefold() == "raken"
         ),
-        3,
+        2,
     )
     selected_weeks = select_raken_dps_pp_weeks(default_weeks)
     if selected_weeks is None:
@@ -311,6 +320,7 @@ def build_run_contexts(args) -> list[RunContext]:
                 pp_mode="first_valid",
                 dps_pp_dps_weeks_ahead=5,
                 dps_pp_dps_weeks_source="舊版根目錄預設",
+                dps_pp_late_dps_mode="merge_to_cutoff",
                 dps_drop_zero_total_rows=False,
                 dps_trim_trailing_zero_dates=False,
                 legacy=True,
@@ -334,6 +344,7 @@ def build_run_contexts(args) -> list[RunContext]:
                     "dps_pp_dps_weeks_source",
                     "buyer_reports.ini / 內建預設",
                 ),
+                dps_pp_late_dps_mode=customer["dps_pp_late_dps_mode"],
                 dps_drop_zero_total_rows=customer["dps_drop_zero_total_rows"],
                 dps_trim_trailing_zero_dates=customer["dps_trim_trailing_zero_dates"],
             )
@@ -359,6 +370,7 @@ def build_run_contexts(args) -> list[RunContext]:
                 pp_mode="first_valid",
                 dps_pp_dps_weeks_ahead=5,
                 dps_pp_dps_weeks_source="舊版根目錄預設",
+                dps_pp_late_dps_mode="merge_to_cutoff",
                 dps_drop_zero_total_rows=False,
                 dps_trim_trailing_zero_dates=False,
                 legacy=True,
@@ -795,6 +807,7 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
                 pp_part_number_keywords=args.pp_part_number_field_keywords,
                 drop_zero_total_rows=context.dps_drop_zero_total_rows,
                 trim_trailing_zero_date_columns=context.dps_trim_trailing_zero_dates,
+                late_dps_mode=context.dps_pp_late_dps_mode,
             )
 
             log(f"\n--- {title} ---")
@@ -850,12 +863,18 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
                 f"{len(info['pp_periods'])} 欄 → {', '.join(info['pp_periods'])}"
             )
             if info["dps_late_total"]:
-                log(
-                    f"  DPS 後段併入    ：{info['dps_cutoff_range'][1]} 之後合計 "
-                    f"{info['dps_late_total']:,} pcs 已併入該日"
-                )
+                if info["dps_late_mode"] == "drop":
+                    log(
+                        f"  DPS 後段處理    ：{info['dps_cutoff_range'][1]} 之後合計 "
+                        f"{info['dps_late_total']:,} pcs 已排除，由 PP 接續"
+                    )
+                else:
+                    log(
+                        f"  DPS 後段處理    ：{info['dps_cutoff_range'][1]} 之後合計 "
+                        f"{info['dps_late_total']:,} pcs 已併入該日"
+                    )
             else:
-                log("  DPS 後段併入    ：無")
+                log("  DPS 後段處理    ：無 cutoff 之後 DPS")
             if info["bom_found"]:
                 log(f"  BOM             ：已讀取 BOM1（{info['bom_count']} 個料號）")
             else:
@@ -1001,6 +1020,7 @@ def run_reports(args) -> bool:
         f"PP={customer['pp_mode']}，"
         f"DPS+PP 的 DPS 保留週數=含本週共{customer['dps_pp_dps_weeks_ahead']}週，"
         f"週數來源={customer.get('dps_pp_dps_weeks_source', 'buyer_reports.ini / 內建預設')}，"
+        f"DPS後段={late_dps_mode_label(customer['dps_pp_late_dps_mode'])}，"
         f"DPS零數量列={'略過' if customer['dps_drop_zero_total_rows'] else '保留'}，"
         f"DPS尾端空白日期={'略過' if customer['dps_trim_trailing_zero_dates'] else '保留'}）"
         for customer in args.customers

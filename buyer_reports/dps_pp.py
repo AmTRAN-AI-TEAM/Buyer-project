@@ -25,6 +25,7 @@ from .common import (
     warn,
     write_number_cell,
     write_text_cell,
+    VALID_DPS_PP_LATE_DPS_MODES,
 )
 from .dps import (
     combine_dps_data,
@@ -246,18 +247,26 @@ def read_pp_plan_data(
     }
 
 
-def build_dps_buckets(data: dict, cutoff_end: dt.date) -> tuple[list[dt.date], dict, float]:
+def build_dps_buckets(
+    data: dict,
+    cutoff_end: dt.date,
+    late_dps_mode: str = "merge_to_cutoff",
+) -> tuple[list[dt.date], dict, float]:
     values: dict[str, dict[dt.date, float]] = defaultdict(lambda: defaultdict(float))
     out_dates = {date for date in data["all_dates"] if date <= cutoff_end}
     late_total = 0.0
 
     for pn, by_date in data["aggregate"].items():
         for date, qty in by_date.items():
-            bucket = cutoff_end if date > cutoff_end else date
-            values[pn][bucket] += qty
-            out_dates.add(bucket)
             if date > cutoff_end:
                 late_total += qty
+                if late_dps_mode == "drop":
+                    continue
+                bucket = cutoff_end
+            else:
+                bucket = date
+            values[pn][bucket] += qty
+            out_dates.add(bucket)
 
     return sorted(out_dates), values, late_total
 
@@ -444,7 +453,13 @@ def generate_dps_pp(
     pp_part_number_keywords: Sequence[str] = DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS,
     drop_zero_total_rows: bool = False,
     trim_trailing_zero_date_columns: bool = False,
+    late_dps_mode: str = "merge_to_cutoff",
 ) -> dict:
+    if late_dps_mode not in VALID_DPS_PP_LATE_DPS_MODES:
+        raise SystemExit(
+            f"DPS+PP 截止日後 DPS 處理模式 {late_dps_mode!r} 不支援；"
+            f"可用模式：{', '.join(VALID_DPS_PP_LATE_DPS_MODES)}"
+        )
     if current_date is None:
         current_date = dt.date.today()
     current_week_auto = current_week is None
@@ -481,7 +496,11 @@ def generate_dps_pp(
         part_number_keywords=pp_part_number_keywords,
     )
 
-    dps_dates, dps_values, dps_late_total = build_dps_buckets(dps_data, cutoff_end)
+    dps_dates, dps_values, dps_late_total = build_dps_buckets(
+        dps_data,
+        cutoff_end,
+        late_dps_mode=late_dps_mode,
+    )
     dps_trimmed_trailing_zero_dates = []
     if trim_trailing_zero_date_columns:
         dps_dates, dps_trimmed_trailing_zero_dates = trim_dps_bucket_dates(
@@ -533,6 +552,7 @@ def generate_dps_pp(
         "dps_dates": len(dps_dates),
         "dps_trimmed_trailing_zero_dates": dps_trimmed_trailing_zero_dates,
         "pp_periods": [period["label"] for period in pp_periods],
+        "dps_late_mode": late_dps_mode,
         "dps_late_total": clean_number(dps_late_total),
         "rows": len(rows),
         "grand_total": clean_number(grand_total),
