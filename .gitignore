@@ -28,3 +28,6 @@ input/**/*.xlsx
 # Legacy typo folder kept ignored for local leftovers from older versions.
 intput/*.xlsx
 intput/**/*.xlsx
+
+# Local CTB ETA settings
+ctb_eta_days.ini
