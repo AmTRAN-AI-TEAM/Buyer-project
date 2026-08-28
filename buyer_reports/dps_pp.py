@@ -25,6 +25,7 @@ from .common import (
     warn,
     write_number_cell,
     write_text_cell,
+    normalize_part_number,
     VALID_DPS_PP_LATE_DPS_MODES,
 )
 from .dps import (
@@ -216,7 +217,7 @@ def read_pp_plan_data(
             continue
         if record[plan_idx].strip() != plan:
             continue
-        pn = record[pn_idx].strip()
+        pn = normalize_part_number(record[pn_idx])
         if not pn:
             continue
         plan_rows += 1
@@ -315,9 +316,10 @@ def read_bom_map(paths: Sequence[Path]) -> tuple[dict[str, str], bool]:
             for row in ws.iter_rows(min_row=1):
                 key = row[1].value if len(row) > 1 else None
                 value = row[7].value if len(row) > 7 else None
-                if key is None or not str(key).strip():
+                part_number = normalize_part_number(key)
+                if not part_number:
                     continue
-                bom.setdefault(str(key).strip(), "" if value is None else str(value).strip())
+                bom.setdefault(part_number, "" if value is None else str(value).strip())
         finally:
             wb.close()
     return bom, found

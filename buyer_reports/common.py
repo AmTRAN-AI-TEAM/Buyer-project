@@ -342,6 +342,24 @@ def normalize_label(value) -> str:
     return re.sub(r"\s+", " ", str(value).strip()).casefold()
 
 
+EXCEL_ESCAPED_WHITESPACE_RE = re.compile(
+    r"_x(0009|000a|000d|0020|00a0)_",
+    re.IGNORECASE,
+)
+
+
+def normalize_part_number(value) -> str:
+    if value is None:
+        return ""
+
+    text = str(value)
+    text = EXCEL_ESCAPED_WHITESPACE_RE.sub(
+        lambda match: chr(int(match.group(1), 16)),
+        text,
+    )
+    return text.strip()
+
+
 def sheet_name_matches_keywords(sheet_name: str, keywords: Sequence[str]) -> bool:
     return any(re.search(re.escape(keyword), sheet_name, re.IGNORECASE) for keyword in keywords)
 

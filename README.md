@@ -174,6 +174,7 @@ Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需�
 就不輸出該列；RAKEN 預設開啟，AVTC 預設關閉。
 `dps_trim_trailing_zero_dates = true` 代表 DPS 輸出只列到最後一個有非 0 數量的日期；
 只會裁掉尾端連續空白日期，中間空白日期仍保留。RAKEN 預設開啟，AVTC 預設關閉。
+料號前後的空白、實際 tab，或 Excel XML 轉義的 `_x0009_` tab，會在讀取時自動清除後再合併。
 `dps_pp_dps_weeks_ahead` 代表 `DPS+PP` 中 DPS 要保留幾週，會包含目前 buyer week；
 目前 buyer week 在自動模式下會套用週五提前使用下一週的規則。
 `dps_pp_late_dps_mode = merge_to_cutoff` 代表 DPS 截止日之後的數字併入 DPS 最後一天；

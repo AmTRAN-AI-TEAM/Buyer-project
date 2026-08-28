@@ -27,6 +27,7 @@ from .common import (
     header_date,
     keyword_label,
     normalize_label,
+    normalize_part_number,
     set_filter_to_used_range,
     warn,
     write_number_cell,
@@ -150,9 +151,9 @@ def read_dps_data(
             start=header_row + 1,
         ):
             raw_pn = row[pn_col - 1] if pn_col - 1 < len(row) else None
-            if raw_pn is None or not str(raw_pn).strip():
+            pn = normalize_part_number(raw_pn)
+            if not pn:
                 continue
-            pn = str(raw_pn).strip()
             is_numeric = isinstance(raw_pn, (int, float)) and not isinstance(raw_pn, bool)
 
             # 表頭沒被判定成日期、底下卻有數量的欄位 → 可能是漏判的日期欄

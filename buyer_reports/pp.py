@@ -29,6 +29,7 @@ from .common import (
     first_existing_sheet,
     keyword_label,
     normalize_label,
+    normalize_part_number,
     numeric,
     serial_to_date,
     set_filter_to_used_range,
@@ -716,7 +717,7 @@ def generate_pp(
             continue
         if record[plan_idx].strip() != plan:
             continue
-        pn = record[pn_idx].strip()
+        pn = normalize_part_number(record[pn_idx])
         if not pn:
             continue
         plan_rows += 1

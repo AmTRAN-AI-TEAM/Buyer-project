@@ -150,6 +150,7 @@ dps_mode = first_valid 代表取第一份格式正確的 DPS。
 dps_mode = merge_all 代表合併該客戶資料夾內所有格式正確的 DPS。
 dps_drop_zero_total_rows = true 代表 DPS 來源列若所有日期欄都沒有非 0 數量，就不輸出該列；RAKEN 預設開啟，AVTC 預設關閉。
 dps_trim_trailing_zero_dates = true 代表 DPS 輸出只列到最後一個有非 0 數量的日期；只會裁掉尾端連續空白日期，中間空白日期仍保留。RAKEN 預設開啟，AVTC 預設關閉。
+料號前後的空白、實際 tab，或 Excel XML 轉義的 _x0009_ tab，會在讀取時自動清除後再合併。
 dps_pp_dps_weeks_ahead 代表 DPS+PP 中 DPS 要保留幾週，會包含目前 buyer week；目前 buyer week 在自動模式下會套用週五提前使用下一週的規則。
 dps_pp_late_dps_mode = merge_to_cutoff 代表 DPS 截止日之後的數字併入 DPS 最後一天；drop 代表截止日之後的 DPS 不納入 DPS+PP，由 PP 接續週接手。
 Windows exe 雙擊執行時，RAKEN 的 dps_pp_dps_weeks_ahead 可由啟動畫面選擇 2 / 3 / 4 週，該次執行會以視窗選擇為準，不需修改 buyer_reports.ini。
