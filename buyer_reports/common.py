@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover - 打包時 requirements 會安裝；這
 
 EXCEL_EPOCH = dt.date(1899, 12, 30)
 CONFIG_FILE_NAME = "buyer_reports.ini"
+CTB_ETA_CONFIG_FILE_NAME = "ctb_eta_days.ini"
+CTB_ETA_CONFIG_SECTION = "ctb_eta"
+CTB_ETA_SITE_SECTION = "supplier_site"
+CTB_ETA_NEW_SITE_SECTION = "supplier_site_new"
+DEFAULT_CTB_ETA_LEAD_DAYS = 15
 DEFAULT_DPS_SHEET_KEYWORDS = ("DPS",)
 DEFAULT_PP_SHEET_KEYWORDS = ("PP", "Data")
 DEFAULT_DPS_PART_NUMBER_HEADERS = ("AVTC P/N", "P/N", "Model")
@@ -186,6 +191,188 @@ def parse_bool(value: str, fallback: bool, label: str) -> bool:
         return False
     warn(f"{label} 設定 {value!r} 不是 true/false，已改用 {fallback}。")
     return fallback
+
+
+def _supplier_site_config_key(value) -> str:
+    return "" if value is None else str(value).strip().casefold()
+
+
+def _supplier_site_config_display(value) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _read_ctb_eta_site_section(
+    parser: configparser.ConfigParser,
+    section: str,
+    default_days: int,
+) -> tuple[dict[str, tuple[str, int]], bool]:
+    entries: dict[str, tuple[str, int]] = {}
+    had_invalid_value = False
+    if not parser.has_section(section):
+        return entries, had_invalid_value
+    for raw_site, raw_days in parser.items(section):
+        site = _supplier_site_config_display(raw_site)
+        key = _supplier_site_config_key(site)
+        if not key:
+            had_invalid_value = True
+            warn(f"CTB ETA 設定忽略空白 Supplier Site。")
+            continue
+        days = parse_positive_int(
+            raw_days,
+            default_days,
+            f"CTB ETA Supplier Site {site}",
+        )
+        if str(raw_days).strip() != str(days):
+            had_invalid_value = True
+        entries[key] = (site, days)
+    return entries, had_invalid_value
+
+
+def _read_ctb_eta_config_file(
+    path: Path,
+) -> tuple[int, dict[str, tuple[str, int]], dict[str, tuple[str, int]], bool]:
+    default_days = DEFAULT_CTB_ETA_LEAD_DAYS
+    main_entries: dict[str, tuple[str, int]] = {}
+    new_entries: dict[str, tuple[str, int]] = {}
+    needs_normalization = not path.is_file()
+    if not path.is_file():
+        return default_days, main_entries, new_entries, needs_normalization
+
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    try:
+        parser.read(path, encoding="utf-8")
+    except configparser.Error as exc:
+        raise SystemExit(f"{path.name} 格式錯誤，請修正後再執行：{exc}") from exc
+
+    raw_default = None
+    if parser.has_section(CTB_ETA_CONFIG_SECTION):
+        raw_default = parser.get(
+            CTB_ETA_CONFIG_SECTION,
+            "default_lead_days",
+            fallback=None,
+        )
+    default_days = parse_positive_int(
+        raw_default if raw_default is not None else str(DEFAULT_CTB_ETA_LEAD_DAYS),
+        DEFAULT_CTB_ETA_LEAD_DAYS,
+        "CTB ETA default_lead_days",
+    )
+    if raw_default is None or str(raw_default).strip() != str(default_days):
+        needs_normalization = True
+
+    main_entries, main_invalid = _read_ctb_eta_site_section(
+        parser,
+        CTB_ETA_SITE_SECTION,
+        default_days,
+    )
+    new_entries, new_invalid = _read_ctb_eta_site_section(
+        parser,
+        CTB_ETA_NEW_SITE_SECTION,
+        default_days,
+    )
+    return default_days, main_entries, new_entries, needs_normalization or main_invalid or new_invalid
+
+
+def _write_ctb_eta_config(
+    path: Path,
+    default_days: int,
+    main_entries: dict[str, tuple[str, int]],
+    new_entries: dict[str, tuple[str, int]],
+) -> None:
+    divider = "# " + "＝" * 34
+    lines = [
+        f"[{CTB_ETA_CONFIG_SECTION}]",
+        "# CTB ETA 預設提前天數；未列出的 Supplier Site 使用此值。",
+        f"default_lead_days = {default_days}",
+        "",
+        f"[{CTB_ETA_SITE_SECTION}]",
+        "# 已確認的 Supplier Site。",
+    ]
+    lines.extend(
+        f"{display} = {days}"
+        for display, days in main_entries.values()
+    )
+    lines.extend(
+        [
+            "",
+            divider,
+            "# 本次新偵測的 Supplier Site；下一次執行時會自動移到上方。",
+            divider,
+            f"[{CTB_ETA_NEW_SITE_SECTION}]",
+        ]
+    )
+    lines.extend(
+        f"{display} = {days}"
+        for display, days in new_entries.values()
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[str]) -> dict:
+    """Sync detected Supplier Sites while preserving saved ETA lead times."""
+    path = root / CTB_ETA_CONFIG_FILE_NAME
+    default_days, main_entries, pending_entries, needs_normalization = _read_ctb_eta_config_file(path)
+    promoted_sites = []
+    for key, entry in pending_entries.items():
+        if key not in main_entries:
+            main_entries[key] = entry
+            promoted_sites.append(entry[0])
+    pending_entries = {}
+
+    detected: dict[str, str] = {}
+    for raw_site in supplier_sites:
+        display = _supplier_site_config_display(raw_site)
+        key = _supplier_site_config_key(display)
+        if key:
+            detected.setdefault(key, display)
+    for key, display in sorted(detected.items()):
+        if key not in main_entries:
+            pending_entries[key] = (display, default_days)
+
+    new_sites = [display for display, _days in pending_entries.values()]
+    changed = (
+        needs_normalization
+        or bool(promoted_sites)
+        or bool(new_sites)
+        or not path.is_file()
+    )
+    if changed:
+        _write_ctb_eta_config(path, default_days, main_entries, pending_entries)
+
+    active_entries = dict(pending_entries)
+    active_entries.update(main_entries)
+    return {
+        "path": path,
+        "default_lead_days": default_days,
+        "lead_days_by_supplier_site": {
+            key: days for key, (_display, days) in active_entries.items()
+        },
+        "detected_supplier_sites": tuple(detected.values()),
+        "new_supplier_sites": tuple(new_sites),
+        "promoted_supplier_sites": tuple(promoted_sites),
+        "changed": changed,
+    }
+
+
+def load_ctb_eta_config(path: Path) -> dict:
+    """Read the current CTB ETA settings after optional user editing."""
+    default_days, main_entries, pending_entries, _needs_normalization = _read_ctb_eta_config_file(path)
+    active_entries = dict(pending_entries)
+    active_entries.update(main_entries)
+    return {
+        "path": path,
+        "default_lead_days": default_days,
+        "lead_days_by_supplier_site": {
+            key: days for key, (_display, days) in active_entries.items()
+        },
+        "new_supplier_sites": tuple(display for display, _days in pending_entries.values()),
+        "promoted_supplier_sites": (),
+        "detected_supplier_sites": (),
+        "changed": False,
+    }
 
 
 def load_sheet_detection_config(root: Path) -> dict:

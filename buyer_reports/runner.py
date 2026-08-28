@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import re
+import subprocess
 import sys
 import traceback
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ from typing import Sequence
 from openpyxl import load_workbook
 
 from .common import (
+    CTB_ETA_CONFIG_FILE_NAME,
+    DEFAULT_CTB_ETA_LEAD_DAYS,
     Progress,
     clean_number,
     close_run_log,
@@ -21,6 +25,7 @@ from .common import (
     header_date,
     is_frozen_app,
     keyword_label,
+    load_ctb_eta_config,
     load_sheet_detection_config,
     log,
     parse_date_arg,
@@ -29,6 +34,7 @@ from .common import (
     project_root,
     set_log_quiet,
     setup_run_log,
+    sync_ctb_eta_config,
     warn,
     write_traceback,
 )
@@ -39,6 +45,7 @@ from .ctb import (
     find_workbook_with_sheet,
     generate_ctb,
     has_ctb_input_candidates,
+    read_open_po,
 )
 from .dps import (
     DPS_COMPARE_SHEETS,
@@ -303,6 +310,148 @@ def apply_raken_dps_pp_weeks_selection(args) -> None:
         "Windows 啟動畫面選擇",
     )
     args.raken_dps_pp_weeks_source = "Windows 啟動畫面選擇"
+
+
+def _ctb_task_enabled_for_context(args, context: RunContext) -> bool:
+    return (
+        not args.skip_ctb
+        and not args.skip_dps
+        and not args.skip_pp
+        and not args.skip_dps_pp
+        and has_ctb_input_candidates(context.input_dir)
+    )
+
+
+def _collect_ctb_supplier_sites(args, contexts: Sequence[RunContext]) -> tuple[str, ...]:
+    detected: dict[str, str] = {}
+    for context in contexts:
+        if not _ctb_task_enabled_for_context(args, context):
+            continue
+        title = f"{context.label} CTB"
+        try:
+            open_po_path = find_workbook_with_sheet(
+                context.input_dir,
+                "open po",
+                f"{title} open po",
+            )
+            records = read_open_po(open_po_path)
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - CTB 本身會再回報來源錯誤
+            warn(f"{title} 無法讀取 Supplier Site，將使用既有設定。原因：{_error_message(exc)}")
+            continue
+        for record in records:
+            display = str(record.supplier_site or "").strip()
+            key = display.casefold()
+            if key:
+                detected.setdefault(key, display)
+    return tuple(detected.values())
+
+
+def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
+    if not new_sites:
+        return
+    message = "本次偵測到新的 Supplier Site：\n\n" + "\n".join(
+        f"- {site}" for site in new_sites
+    )
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            messagebox.showwarning(
+                "CTB ETA 設定提醒",
+                message,
+                parent=root,
+            )
+        finally:
+            root.destroy()
+    except Exception as exc:  # pragma: no cover - depends on local desktop/display
+        warn(f"無法開啟新的 Supplier Site 警告視窗，已改在終端機顯示。原因：{exc}")
+        warn(message.replace("\n", "；"))
+
+
+def _edit_ctb_eta_config(path: Path) -> None:
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))  # type: ignore[attr-defined]  # pragma: no cover - Windows runtime
+        elif sys.platform == "darwin":
+            subprocess.Popen(
+                ["open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except OSError as exc:
+        warn(f"無法使用作業系統預設程式開啟設定檔，請手動編輯 {path}。原因：{exc}")
+    input("設定檔開啟後，編輯並關閉檔案，再按 Enter 繼續：")
+
+
+def _apply_ctb_eta_settings(args, settings: dict) -> None:
+    args.ctb_eta_config_path = settings["path"]
+    args.ctb_eta_default_lead_days = settings["default_lead_days"]
+    args.ctb_eta_lead_days_by_supplier_site = settings["lead_days_by_supplier_site"]
+
+
+def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
+    default_path = project_root() / CTB_ETA_CONFIG_FILE_NAME
+    args.ctb_eta_config_path = default_path
+    args.ctb_eta_default_lead_days = DEFAULT_CTB_ETA_LEAD_DAYS
+    args.ctb_eta_lead_days_by_supplier_site = {}
+
+    # Windows exe 目前維持既有流程；命令列模式先使用這份可編輯設定。
+    if is_frozen_app():
+        return
+
+    ctb_contexts = [
+        context
+        for context in contexts
+        if _ctb_task_enabled_for_context(args, context)
+    ]
+    if not ctb_contexts:
+        return
+
+    detected_sites = _collect_ctb_supplier_sites(args, ctb_contexts)
+    settings = sync_ctb_eta_config(project_root(), detected_sites)
+    _apply_ctb_eta_settings(args, settings)
+    log(f"CTB ETA 設定檔：{settings['path']}")
+    log(
+        f"CTB ETA 天數    ：預設 {settings['default_lead_days']} 天，"
+        f"Supplier Site 覆寫 {len(settings['lead_days_by_supplier_site'])} 項"
+    )
+    if settings["promoted_supplier_sites"]:
+        log(
+            "CTB ETA 已移至已確認區："
+            + "、".join(settings["promoted_supplier_sites"])
+        )
+    if settings["new_supplier_sites"]:
+        log("＝" * 72)
+        log("CTB ETA 新 Supplier Site（目前先使用預設天數）：")
+        for site in settings["new_supplier_sites"]:
+            log(f"  - {site}")
+        log("＝" * 72)
+
+    if args.quiet or not sys.stdin.isatty():
+        return
+
+    try:
+        answer = input("是否要開啟 CTB ETA Supplier Site 設定檔調整天數？(Y/N)：")
+    except EOFError:
+        answer = "N"
+    if answer.strip().casefold() not in {"y", "yes"}:
+        log("CTB ETA 設定檔未開啟，沿用目前設定。")
+        return
+
+    _show_ctb_new_supplier_site_warning(settings["new_supplier_sites"])
+    _edit_ctb_eta_config(settings["path"])
+    _apply_ctb_eta_settings(args, load_ctb_eta_config(settings["path"]))
+    log("CTB ETA 設定檔已重新讀取，當次 CTB 將使用編輯後的天數。")
 
 
 def build_run_contexts(args) -> list[RunContext]:
@@ -942,6 +1091,8 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
             over_shortage_path=over_shortage_path,
             output_path=out_path,
             template_path=template_path,
+            default_eta_lead_days=args.ctb_eta_default_lead_days,
+            eta_lead_days_by_supplier_site=args.ctb_eta_lead_days_by_supplier_site,
         )
         log(f"\n--- {title} ---")
         log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
@@ -976,7 +1127,15 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
             f"期間 {info['periods']} 欄"
             f"{template_rows_text}"
         )
-        log("  ETA 日期規則    ：依 open po Need By Date 放入相同或下一個可用期間欄")
+        log(
+            f"  ETA 日期規則    ：逐筆模擬 Balance，第一個負值期間依 Supplier Site 往前"
+            f" {args.ctb_eta_default_lead_days} 個日曆日（未覆寫時）；"
+            "若無負值則 fallback 至 open po Need By Date"
+        )
+        log(
+            f"  ETA 站點覆寫    ：{len(args.ctb_eta_lead_days_by_supplier_site)} 項，"
+            f"設定檔 {args.ctb_eta_config_path}"
+        )
         log(f"  產出檔          ：{out_path}")
         if args.compare:
             warn(f"{title} 目前尚未支援 CTB 逐格對帳，已略過 --compare。")
@@ -1041,6 +1200,8 @@ def run_reports(args) -> bool:
     for context in contexts:
         log(f"  {context.label}：{context.input_dir} → {context.out_dir}")
 
+    prepare_ctb_eta_settings(args, contexts)
+
     tasks = []
     for context in contexts:
         if not args.skip_dps:
@@ -1049,13 +1210,7 @@ def run_reports(args) -> bool:
             tasks.append((context, "PP", run_pp_report))
         if not args.skip_dps and not args.skip_pp and not args.skip_dps_pp:
             tasks.append((context, "DPS+PP", run_dps_pp_report))
-        if (
-            not args.skip_ctb
-            and not args.skip_dps
-            and not args.skip_pp
-            and not args.skip_dps_pp
-            and has_ctb_input_candidates(context.input_dir)
-        ):
+        if _ctb_task_enabled_for_context(args, context):
             tasks.append((context, "CTB", run_ctb_report))
 
     results = []

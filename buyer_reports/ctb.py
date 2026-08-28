@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import CellIsRule
@@ -20,6 +20,7 @@ from .common import (
     copy_cell_format,
     copy_column_layout,
     copy_row_layout,
+    DEFAULT_CTB_ETA_LEAD_DAYS,
     normalize_label,
     normalize_part_number,
     numeric,
@@ -37,6 +38,7 @@ CTB_OPEN_PO_SHEET = "open po"
 CTB_DPS_PP_SHEET = "DPS+PP"
 CTB_ROW_TYPE_COL = 13
 CTB_FIRST_PERIOD_COL = 14
+ETA_LEAD_DAYS = DEFAULT_CTB_ETA_LEAD_DAYS
 CTB_OVER_SHORTAGE_COL = 10
 CTB_PO_REMAIN_COL = 11
 CTB_TOTAL_COL = 12
@@ -560,6 +562,10 @@ def _eta_key(part_no: str, supplier_site: str) -> str:
     return f"{part_no}{supplier_site}" if part_no or supplier_site else ""
 
 
+def _supplier_site_key(value) -> str:
+    return "" if value is None else str(value).strip().casefold()
+
+
 def build_part_map(
     periods: Sequence[Period],
     bom_rows: Sequence[BomRow],
@@ -627,16 +633,96 @@ def build_parts(
     return filter_ctb_parts(parts, order)
 
 
+def _project_balance_values(
+    periods: Sequence[Period],
+    demand: Sequence[float],
+    eta: Sequence[float],
+    other: Sequence[float],
+    over_shortage: float,
+    initial_sum_cols: tuple[int, int] | None = None,
+    period_start_col: int = CTB_FIRST_PERIOD_COL,
+) -> list[float]:
+    """Project Balance with the same period relationships written to Excel."""
+    if not periods:
+        return []
+
+    def value_at(values: Sequence[float], idx: int) -> float:
+        return numeric(values[idx]) if idx < len(values) else 0.0
+
+    if initial_sum_cols is None:
+        initial_indices = range(1, len(periods))
+    else:
+        initial_indices = (
+            idx
+            for idx in range(len(periods))
+            if initial_sum_cols[0] <= period_start_col + idx <= initial_sum_cols[1]
+        )
+    balances = [numeric(over_shortage)]
+    balances[0] += sum(value_at(demand, idx) for idx in initial_indices)
+    for idx in range(1, len(periods)):
+        balances.append(
+            balances[idx - 1]
+            + value_at(eta, idx - 1)
+            - value_at(demand, idx)
+            - value_at(other, idx)
+        )
+    return balances
+
+
 def eta_schedule_for_records(
     periods: Sequence[Period],
     records: Sequence[OpenPoRecord],
+    *,
+    demand: Sequence[float] | None = None,
+    over_shortage: float = 0.0,
+    other: Sequence[float] | None = None,
+    initial_sum_cols: tuple[int, int] | None = None,
+    period_start_col: int = CTB_FIRST_PERIOD_COL,
+    default_lead_days: int = ETA_LEAD_DAYS,
+    lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict[str, list[float]]:
     schedules: dict[str, list[float]] = defaultdict(lambda: [0.0] * len(periods))
+    if not periods:
+        return schedules
+
+    demand_values = list(demand) if demand is not None else [0.0] * len(periods)
+    other_values = list(other) if other is not None else [0.0] * len(periods)
+    scheduled_eta = [0.0] * len(periods)
+
     for record in records:
-        idx = period_index_for_date(periods, record.need_by_date)
+        balance_values = _project_balance_values(
+            periods,
+            demand_values,
+            scheduled_eta,
+            other_values,
+            over_shortage,
+            initial_sum_cols,
+            period_start_col,
+        )
+        negative_idx = next(
+            (idx for idx, balance in enumerate(balance_values) if balance < 0),
+            None,
+        )
+        if negative_idx is None:
+            idx = period_index_for_date(periods, record.need_by_date)
+        else:
+            shortage_date = periods[negative_idx].start
+            lead_days = default_lead_days
+            if lead_days_by_supplier_site:
+                lead_days = lead_days_by_supplier_site.get(
+                    _supplier_site_key(record.supplier_site),
+                    default_lead_days,
+                )
+            target_date = (
+                shortage_date - dt.timedelta(days=lead_days)
+                if shortage_date is not None
+                else record.need_by_date
+            )
+            idx = period_index_for_date(periods, target_date)
         if idx is None:
             continue
         schedules[record.key][idx] += record.quantity_due
+        scheduled_eta[idx] += record.quantity_due
     return schedules
 
 
@@ -973,7 +1059,14 @@ def _write_static_cells(ws, row_idx: int, part: CtbPart, row_type: str, key: str
     write_text_cell(ws.cell(row_idx, 13), row_type)
 
 
-def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[CtbPart]) -> dict:
+def write_ctb_sheet(
+    wb: Workbook,
+    periods: Sequence[Period],
+    parts: Sequence[CtbPart],
+    *,
+    default_eta_lead_days: int = ETA_LEAD_DAYS,
+    eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
+) -> dict:
     ws = wb.active
     ws.title = CTB_SHEET
     start_col = _write_header(ws, periods)
@@ -1001,7 +1094,15 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
         demand_rows += 1
         row_idx += 1
 
-        schedules = eta_schedule_for_records(periods, part.open_po)
+        schedules = eta_schedule_for_records(
+            periods,
+            part.open_po,
+            demand=part.demand,
+            over_shortage=part.shortage.over_shortage if part.shortage else 0.0,
+            period_start_col=start_col,
+            default_lead_days=default_eta_lead_days,
+            lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+        )
         po_by_key: dict[str, OpenPoRecord] = {}
         for record in part.open_po:
             po_by_key.setdefault(record.key, record)
@@ -1249,18 +1350,6 @@ def _values_for_template_periods(
     return values
 
 
-def _schedule_for_template_periods(
-    template_periods: Sequence[Period],
-    records: Sequence[OpenPoRecord],
-) -> list[float]:
-    schedule = [0.0] * len(template_periods)
-    for record in records:
-        idx = period_index_for_date(template_periods, record.need_by_date)
-        if idx is not None:
-            schedule[idx] += record.quantity_due
-    return schedule
-
-
 def _clear_cell(cell) -> None:
     cell.value = None
 
@@ -1351,6 +1440,9 @@ def _process_template_group(
     parts_by_part: dict[str, CtbPart],
     shortage_records: dict[str, ShortageRecord],
     open_po_by_key: dict[str, list[OpenPoRecord]],
+    *,
+    default_eta_lead_days: int = ETA_LEAD_DAYS,
+    eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict[str, int]:
     first_row = group_rows[0]
     template_periods = [period for _col, period in period_columns]
@@ -1365,6 +1457,33 @@ def _process_template_group(
     demand_row_indices: list[int] = []
     eta_row_indices: list[int] = []
     other_row_indices: list[int] = []
+
+    initial_sum_cols = None
+    for row_idx in group_rows:
+        if _is_balance_row_type(_ctb_row_type(ws, row_idx)):
+            initial_sum_cols = _formula_sum_col_range(
+                formula_ws.cell(row_idx, period_columns[0][0]).value
+            )
+            break
+
+    eta_records: list[OpenPoRecord] = []
+    eta_keys: dict[int, str] = {}
+    for row_idx in group_rows:
+        if _ctb_row_type(ws, row_idx).casefold() != "eta":
+            continue
+        key = normalize_part_number(ws.cell(row_idx, 4).value)
+        eta_keys[row_idx] = key
+        eta_records.extend(open_po_by_key.get(key, []))
+    eta_schedules = eta_schedule_for_records(
+        template_periods,
+        eta_records,
+        demand=demand_values,
+        over_shortage=part.shortage.over_shortage if part.shortage else 0.0,
+        initial_sum_cols=initial_sum_cols,
+        period_start_col=period_columns[0][0],
+        default_lead_days=default_eta_lead_days,
+        lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+    )
 
     for row_idx in group_rows:
         row_type = _ctb_row_type(ws, row_idx)
@@ -1386,9 +1505,9 @@ def _process_template_group(
             stats["demand_rows"] += 1
         elif row_type.casefold() == "eta":
             eta_row_indices.append(row_idx)
-            key = normalize_part_number(ws.cell(row_idx, 4).value)
+            key = eta_keys[row_idx]
             records = open_po_by_key.get(key, [])
-            schedule = _schedule_for_template_periods(template_periods, records)
+            schedule = eta_schedules.get(key, [0.0] * len(template_periods))
             _write_template_part_static(ws, row_idx, part, row_type)
             _write_template_eta_static(ws, row_idx, records[0] if records else None)
             _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), _open_po_lookup_formula(row_idx))
@@ -1454,6 +1573,9 @@ def write_ctb_from_template(
     parts_by_part: dict[str, CtbPart],
     shortage_records: dict[str, ShortageRecord],
     open_po_records: Sequence[OpenPoRecord],
+    *,
+    default_eta_lead_days: int = ETA_LEAD_DAYS,
+    eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict:
     template_wb = load_workbook(template_path, data_only=True)
     formula_wb = load_workbook(template_path, data_only=False)
@@ -1501,6 +1623,8 @@ def write_ctb_from_template(
                 parts_by_part,
                 shortage_records,
                 open_po_by_key,
+                default_eta_lead_days=default_eta_lead_days,
+                eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
             )
             demand_rows += stats["demand_rows"]
             eta_rows += stats["eta_rows"]
@@ -1537,6 +1661,9 @@ def generate_ctb(
     over_shortage_path: Path,
     output_path: Path,
     template_path: Path | None = None,
+    *,
+    default_eta_lead_days: int = ETA_LEAD_DAYS,
+    eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict:
     periods, demand_by_parent = read_dps_pp(dps_pp_path)
     bom_rows = read_bom_rows(bom_path, periods, demand_by_parent)
@@ -1554,9 +1681,20 @@ def generate_ctb(
             parts_by_part,
             shortage,
             open_po,
+            default_eta_lead_days=default_eta_lead_days,
+            eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
         )
     else:
-        stats = {"mode": "generated", **write_ctb_sheet(wb, periods, parts)}
+        stats = {
+            "mode": "generated",
+            **write_ctb_sheet(
+                wb,
+                periods,
+                parts,
+                default_eta_lead_days=default_eta_lead_days,
+                eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+            ),
+        }
     copy_dps_pp_sheet(wb, dps_pp_path)
     write_auxiliary_sheets(wb, periods, bom_rows, shortage, open_po)
 

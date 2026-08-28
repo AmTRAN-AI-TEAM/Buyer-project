@@ -48,7 +48,7 @@
 3. `over shortage` 用來取得 shortage 起始值；來源 sheet 必須有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage` 欄，程式會直接使用該欄作為 CTB 的 `OVER SHORTAGE` / balance 起始值。
 4. `open po` 用 `Item + Supplier Site` 產生 key，對應 `Quantity Due` 與 `Need By Date`，產出 ETA / PO Remain 列。
 5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
-6. ETA 日期會依 `open po` 的 `Need By Date` 放到相同或下一個可用期間欄；若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
+6. ETA 會逐筆模擬 Balance，將每筆 `Quantity Due` 放到加入前第一個負值期間依 Supplier Site 設定的天數往前推算所對應的期間；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 `Need By Date`。若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
 7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
 8. 若同一客戶資料夾內另有原始 `CTB` sheet，程式會沿用該 sheet 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 `CTB` sheet，仍會使用程式新建版面輸出。
 9. CTB 主表的 `OVER SHORTAGE` 與 Balance 期間欄、輔助頁 `over shortage` 的 `Over Shortage` 欄若為負數，會以紅色字體顯示。
@@ -60,6 +60,7 @@ buyer-reports/
 ├── build_exe.bat               # Windows 打包腳本（產生 exe）
 ├── generate_buyer_reports.py   # 入口檔
 ├── buyer_reports.ini           # sheet / 欄位偵測關鍵字設定
+├── ctb_eta_days.ini            # CTB ETA Supplier Site 提前天數（執行時自動建立）
 ├── buyer_reports/              # 主程式模組
 │   ├── common.py               # 共用工具、log、Excel helper、Windows exe 判斷
 │   ├── dps.py                  # DPS 解析與輸出
@@ -180,6 +181,40 @@ Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需�
 目前 buyer week 在自動模式下會套用週五提前使用下一週的規則。
 `dps_pp_late_dps_mode = merge_to_cutoff` 代表 DPS 截止日之後的數字併入 DPS 最後一天；
 `drop` 代表截止日之後的 DPS 不納入 `DPS+PP`，由 PP 接續週接手。
+
+## CTB ETA Supplier Site 設定
+
+命令列執行時，若本次有可產出的 CTB，程式會先讀取所有 `open po` 的 `Supplier Site`，
+並在專案根目錄自動建立或更新 `ctb_eta_days.ini`。這份檔案與 `buyer_reports.ini`
+分開，會保留到下次執行，不需要每次重新輸入。
+
+檔案格式如下：
+
+```ini
+[ctb_eta]
+default_lead_days = 15
+
+[supplier_site]
+SITE_A = 15
+SITE_B = 20
+
+# ＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
+# 本次新偵測的 Supplier Site；下一次執行時會自動移到上方。
+# ＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
+[supplier_site_new]
+SITE_C = 15
+```
+
+`default_lead_days` 是未個別設定站點時的預設提前天數；`[supplier_site]` 內可直接修改
+各 Supplier Site 的提前天數，允許填 `0`。第一次偵測到的站點會先放在
+`[supplier_site_new]`，並以預設值計算。執行時按 Enter 後，程式會詢問是否開啟設定檔；
+回答 `Y` 時，若有新站點會先跳出警告視窗，再開啟終端機編輯器。編輯器關閉後，當次 CTB
+就會重新讀取設定。下一次執行時，上一輪的 `[supplier_site_new]` 會自動移到
+`[supplier_site]` 上方區域，並保留你修改過的天數。
+
+程式會直接使用作業系統預設的文字檔案應用程式開啟設定檔；檔案開啟後，程式會等待你
+編輯並關閉檔案，再按 Enter 繼續讀取設定。
+目前這項互動設定只接在命令列執行模式，Windows exe 的操作流程暫不變更。
 
 ## Windows 執行檔
 
@@ -311,7 +346,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | over shortage | 來源檔需有 `over shortage` sheet，且表頭需有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage`；程式會直接用 `OVER SHORTAGE` 作為 balance 起始值，並將 `Po Remain`、`HLD`、`BOR MM`、`Overshortage1` 等存在的欄位寫入輔助頁供追溯 |
 | 原始 CTB | 可選。若來源檔有 `CTB` sheet，輸出會套用它的表頭、日期欄、列順序與格式；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
 | Demand | `DPS+PP` 成品需求 × `BOM1` USE，依子件料號彙總 |
-| ETA | `open po` 的 `Quantity Due` 依 `Need By Date` 放到相同或下一個可用期間欄 |
+| ETA | 依 `open po` 的 `Quantity Due` 逐筆模擬 Balance；每筆 PO 放在加入前第一個負值期間依 Supplier Site 往前設定的日曆日所對應的期間，未個別設定時預設 15 天。若整個期間沒有負值，則 fallback 至該筆 `Need By Date` |
 | Balance | 使用 `over shortage` 的 `OVER SHORTAGE` 欄作起始 shortage 基準，Balance row 輸出為 Excel 公式，會隨 ETA / other 修改連動重算 |
 
 CTB A:M 欄位目前依下列規則輸出：
