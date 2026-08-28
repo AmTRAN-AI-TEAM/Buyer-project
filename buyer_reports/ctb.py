@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 
@@ -20,6 +21,7 @@ from .common import (
     copy_column_layout,
     copy_row_layout,
     normalize_label,
+    normalize_part_number,
     numeric,
     set_filter_to_used_range,
     write_number_cell,
@@ -35,6 +37,10 @@ CTB_OPEN_PO_SHEET = "open po"
 CTB_DPS_PP_SHEET = "DPS+PP"
 CTB_ROW_TYPE_COL = 13
 CTB_FIRST_PERIOD_COL = 14
+CTB_OVER_SHORTAGE_COL = 10
+CTB_PO_REMAIN_COL = 11
+CTB_TOTAL_COL = 12
+NEGATIVE_FONT_COLOR = "FFFF0000"
 WEEKDAY_LABELS = {
     "mon",
     "monday",
@@ -142,7 +148,7 @@ def workbook_has_any_ctb_sheet(path: Path) -> bool:
     try:
         return any(
             _sheet_name(wb, sheet_name) is not None
-            for sheet_name in (CTB_BOM_SHEET, CTB_OPEN_PO_SHEET, "Shortage")
+            for sheet_name in (CTB_BOM_SHEET, CTB_OPEN_PO_SHEET, CTB_OVER_SHORTAGE_SHEET)
         )
     finally:
         wb.close()
@@ -253,13 +259,16 @@ def read_dps_pp(dps_pp_path: Path) -> tuple[list[Period], dict[str, list[float]]
 
         demand_by_parent: dict[str, list[float]] = {}
         for row in ws.iter_rows(min_row=5, values_only=True):
-            parent = "" if row[0] is None else str(row[0]).strip()
+            parent = normalize_part_number(row[0])
             if not parent:
                 continue
-            demand_by_parent[parent] = [
+            values = [
                 numeric(row[period.source_col - 1] if period.source_col - 1 < len(row) else None)
                 for period in periods
             ]
+            existing = demand_by_parent.setdefault(parent, [0.0] * len(periods))
+            for idx, value in enumerate(values):
+                existing[idx] += value
         return periods, demand_by_parent
     finally:
         wb.close()
@@ -301,15 +310,8 @@ def _find_col(headers: dict[str, int], aliases: Sequence[str]) -> int | None:
     return None
 
 
-def _find_shortage_over_col(headers: dict[str, int], ws) -> int | None:
-    preferred_col = _find_col(headers, ["Overshortage1", "Over shortage", "overshortage"])
-    if preferred_col is not None:
-        return preferred_col
-    fallback_col = _find_col(headers, ["OVER_SHORTAGE", "Over Shortage"])
-    if fallback_col is not None:
-        return fallback_col
-    qn_col = column_index_from_string("QN")
-    return qn_col if ws.max_column >= qn_col else None
+def _find_over_shortage_col(headers: dict[str, int]) -> int | None:
+    return _find_col(headers, ["OVER SHORTAGE", "Over Shortage", "OVER_SHORTAGE"])
 
 
 def read_bom_rows(
@@ -345,8 +347,8 @@ def read_bom_rows(
             parent = ws.cell(row_idx, parent_col).value if parent_col else None
             if child is None or parent is None:
                 continue
-            child_text = str(child).strip()
-            parent_text = str(parent).strip()
+            child_text = normalize_part_number(child)
+            parent_text = normalize_part_number(parent)
             if not child_text or not parent_text:
                 continue
             use = numeric(ws.cell(row_idx, use_col).value)
@@ -374,41 +376,58 @@ def read_bom_rows(
         formula_wb.close()
 
 
-def read_shortage(shortage_path: Path) -> dict[str, ShortageRecord]:
-    wb = load_workbook(shortage_path, data_only=True)
+def _merge_shortage_record(existing: ShortageRecord, incoming: ShortageRecord) -> None:
+    if not existing.description:
+        existing.description = incoming.description
+    if not existing.buyer:
+        existing.buyer = incoming.buyer
+    if not existing.planner:
+        existing.planner = incoming.planner
+    if not existing.lead_time:
+        existing.lead_time = incoming.lead_time
+    existing.po_remain += incoming.po_remain
+    existing.over_shortage += incoming.over_shortage
+    existing.hld += incoming.hld
+    existing.bor_mm += incoming.bor_mm
+    existing.overshortage1 += incoming.overshortage1
+
+
+def read_over_shortage(over_shortage_path: Path) -> dict[str, ShortageRecord]:
+    wb = load_workbook(over_shortage_path, data_only=True)
     try:
-        sheet_name = _sheet_name(wb, "Shortage")
+        sheet_name = _sheet_name(wb, CTB_OVER_SHORTAGE_SHEET)
         if sheet_name is None:
-            raise SystemExit(f"{shortage_path.name} 內找不到 Shortage 工作表")
+            raise SystemExit(f"{over_shortage_path.name} 內找不到 {CTB_OVER_SHORTAGE_SHEET} 工作表")
         ws = wb[sheet_name]
         header_row = _find_header_row(ws, ["Part No"], max_row=10)
         if header_row is None:
-            raise SystemExit(f"{shortage_path.name} 的 Shortage 找不到 Part No 表頭")
+            raise SystemExit(f"{over_shortage_path.name} 的 {CTB_OVER_SHORTAGE_SHEET} 找不到 Part No 表頭")
         headers = _header_cols(ws, header_row)
         part_col = _find_col(headers, ["Part No"])
         if part_col is None:
-            raise SystemExit(f"{shortage_path.name} 的 Shortage 缺少 Part No 欄")
+            raise SystemExit(f"{over_shortage_path.name} 的 {CTB_OVER_SHORTAGE_SHEET} 缺少 Part No 欄")
 
         description_col = _find_col(headers, ["Description", "DESCRIPTION"])
         planner_col = _find_col(headers, ["Planner", "PLANNER"])
         buyer_col = _find_col(headers, ["Buyer"])
         lead_time_col = _find_col(headers, ["LT", "Lead Time"])
         po_remain_col = _find_col(headers, ["PO_REMAIN", "Po Remain"])
-        qn_col = column_index_from_string("QN") if ws.max_column >= column_index_from_string("QN") else None
-        over_col = _find_shortage_over_col(headers, ws)
+        over_col = _find_over_shortage_col(headers)
+        if over_col is None:
+            raise SystemExit(
+                f"{over_shortage_path.name} 的 {CTB_OVER_SHORTAGE_SHEET} 缺少 OVER SHORTAGE 欄"
+            )
         hld_col = _find_col(headers, ["HLD"])
         bor_col = _find_col(headers, ["BOR MM"])
-        overshortage1_col = _find_col(headers, ["Overshortage1", "overshortage"]) or qn_col
+        overshortage1_col = _find_col(headers, ["Overshortage1", "overshortage"])
 
         records = {}
         for row_idx in range(header_row + 1, ws.max_row + 1):
             part = ws.cell(row_idx, part_col).value
-            if part is None or not str(part).strip():
+            part_text = normalize_part_number(part)
+            if not part_text:
                 continue
-            part_text = str(part).strip()
-            if part_text in records:
-                continue
-            records[part_text] = ShortageRecord(
+            record = ShortageRecord(
                 part=part_text,
                 description="" if description_col is None or ws.cell(row_idx, description_col).value is None else str(ws.cell(row_idx, description_col).value).strip(),
                 buyer="" if buyer_col is None or ws.cell(row_idx, buyer_col).value is None else str(ws.cell(row_idx, buyer_col).value).strip(),
@@ -420,6 +439,11 @@ def read_shortage(shortage_path: Path) -> dict[str, ShortageRecord]:
                 bor_mm=numeric(ws.cell(row_idx, bor_col).value if bor_col else None),
                 overshortage1=numeric(ws.cell(row_idx, overshortage1_col).value if overshortage1_col else None),
             )
+            existing = records.get(part_text)
+            if existing is None:
+                records[part_text] = record
+            else:
+                _merge_shortage_record(existing, record)
         return records
     finally:
         wb.close()
@@ -448,9 +472,9 @@ def read_open_po(open_po_path: Path) -> list[OpenPoRecord]:
         records = []
         for row_idx in range(header_row + 1, ws.max_row + 1):
             item = ws.cell(row_idx, item_col).value
-            if item is None or not str(item).strip():
+            item_text = normalize_part_number(item)
+            if not item_text:
                 continue
-            item_text = str(item).strip()
             quantity_due = numeric(ws.cell(row_idx, quantity_col).value)
             if quantity_due == 0:
                 continue
@@ -461,7 +485,7 @@ def read_open_po(open_po_path: Path) -> list[OpenPoRecord]:
             )
             key = ""
             if key_col is not None and ws.cell(row_idx, key_col).value is not None:
-                key = str(ws.cell(row_idx, key_col).value).strip()
+                key = normalize_part_number(ws.cell(row_idx, key_col).value)
             if not key:
                 key = f"{item_text}{supplier_site}"
             records.append(
@@ -661,6 +685,8 @@ def write_auxiliary_sheets(
                 write_number_cell(ws.cell(row_idx, col), clean_number(numeric(value)))
             else:
                 write_text_cell(ws.cell(row_idx, col), value)
+    if shortage_records:
+        _add_negative_font_rule(ws, f"G2:G{len(shortage_records) + 1}")
     autosize(ws, maximum=24)
 
     ws = wb.create_sheet(CTB_OPEN_PO_SHEET)
@@ -702,6 +728,179 @@ def copy_dps_pp_sheet(wb: Workbook, dps_pp_path: Path) -> None:
         autosize(ws, maximum=18)
     finally:
         source_wb.close()
+
+
+def _write_formula_cell(cell, formula: str) -> None:
+    cell.value = formula
+    cell.number_format = "General"
+
+
+def _cell_ref(row_idx: int, col_idx: int, *, absolute_col: bool = False) -> str:
+    col = get_column_letter(col_idx)
+    return f"{'$' if absolute_col else ''}{col}{row_idx}"
+
+
+def _sheet_ref(sheet_name: str) -> str:
+    return "'" + sheet_name.replace("'", "''") + "'"
+
+
+def _row_range_ref(row_idx: int, start_col: int, end_col: int) -> str:
+    if start_col > end_col:
+        return ""
+    start_ref = _cell_ref(row_idx, start_col)
+    end_ref = _cell_ref(row_idx, end_col)
+    return start_ref if start_col == end_col else f"{start_ref}:{end_ref}"
+
+
+def _period_row_range_ref(
+    row_idx: int,
+    period_columns: Sequence[tuple[int, Period]],
+    col_range: tuple[int, int] | None = None,
+) -> str:
+    cols = [
+        col
+        for col, _period in period_columns
+        if col_range is None or col_range[0] <= col <= col_range[1]
+    ]
+    if not cols:
+        return ""
+    return _row_range_ref(row_idx, cols[0], cols[-1])
+
+
+def _sum_expression(ref: str) -> str:
+    return f"SUM({ref})" if ref else "0"
+
+
+def _sum_period_formula(
+    row_idx: int,
+    period_columns: Sequence[tuple[int, Period]],
+    col_range: tuple[int, int] | None = None,
+) -> str:
+    return f"={_sum_expression(_period_row_range_ref(row_idx, period_columns, col_range))}"
+
+
+def _sum_rows_in_col_expression(row_indices: Sequence[int], col_idx: int) -> str:
+    if not row_indices:
+        return "0"
+    sorted_rows = sorted(row_indices)
+    if len(sorted_rows) == 1:
+        return _cell_ref(sorted_rows[0], col_idx)
+    if sorted_rows == list(range(sorted_rows[0], sorted_rows[-1] + 1)):
+        return f"SUM({_cell_ref(sorted_rows[0], col_idx)}:{_cell_ref(sorted_rows[-1], col_idx)})"
+    refs = ",".join(_cell_ref(row_idx, col_idx) for row_idx in sorted_rows)
+    return f"SUM({refs})"
+
+
+def _over_shortage_lookup_formula(row_idx: int) -> str:
+    sheet = _sheet_ref(CTB_OVER_SHORTAGE_SHEET)
+    return f"=SUMIF({sheet}!$A:$A,{_cell_ref(row_idx, 3, absolute_col=True)},{sheet}!$G:$G)"
+
+
+def _open_po_lookup_formula(row_idx: int) -> str:
+    sheet = _sheet_ref(CTB_OPEN_PO_SHEET)
+    return f"=SUMIF({sheet}!$A:$A,{_cell_ref(row_idx, 4, absolute_col=True)},{sheet}!$E:$E)"
+
+
+def _first_balance_formula(
+    balance_row: int,
+    demand_row: int,
+    period_columns: Sequence[tuple[int, Period]],
+    initial_sum_cols: tuple[int, int] | None = None,
+) -> str:
+    if initial_sum_cols is None:
+        demand_ref = _period_row_range_ref(demand_row, period_columns[1:])
+    else:
+        demand_ref = _period_row_range_ref(demand_row, period_columns, initial_sum_cols)
+    demand_expr = _sum_expression(demand_ref)
+    return f"={_cell_ref(balance_row, CTB_OVER_SHORTAGE_COL)}+{demand_expr}"
+
+
+def _next_balance_formula(
+    balance_row: int,
+    demand_row: int,
+    eta_rows: Sequence[int],
+    other_rows: Sequence[int],
+    prev_col: int,
+    current_col: int,
+) -> str:
+    eta_expr = _sum_rows_in_col_expression(eta_rows, prev_col)
+    other_expr = _sum_rows_in_col_expression(other_rows, current_col)
+    return (
+        f"={_cell_ref(balance_row, prev_col)}"
+        f"+{eta_expr}"
+        f"-{_cell_ref(demand_row, current_col)}"
+        f"-{other_expr}"
+    )
+
+
+def _write_balance_formulas(
+    ws,
+    balance_row: int,
+    demand_row: int,
+    eta_rows: Sequence[int],
+    other_rows: Sequence[int],
+    period_columns: Sequence[tuple[int, Period]],
+    initial_sum_cols: tuple[int, int] | None = None,
+) -> None:
+    for idx, (col, _period) in enumerate(period_columns):
+        if idx == 0:
+            formula = _first_balance_formula(balance_row, demand_row, period_columns, initial_sum_cols)
+        else:
+            formula = _next_balance_formula(
+                balance_row,
+                demand_row,
+                eta_rows,
+                other_rows,
+                period_columns[idx - 1][0],
+                col,
+            )
+        _write_formula_cell(ws.cell(balance_row, col), formula)
+
+
+def _po_remain_formula(
+    balance_row: int,
+    period_columns: Sequence[tuple[int, Period]],
+    po_remain_period_idx: int | None,
+) -> str | None:
+    if po_remain_period_idx is None or po_remain_period_idx >= len(period_columns):
+        return None
+    balance_col = period_columns[po_remain_period_idx][0]
+    return (
+        f"={_cell_ref(balance_row, CTB_OVER_SHORTAGE_COL)}"
+        f"-{_cell_ref(balance_row, balance_col)}"
+    )
+
+
+def _negative_font_rule() -> CellIsRule:
+    return CellIsRule(operator="lessThan", formula=["0"], font=Font(color=NEGATIVE_FONT_COLOR))
+
+
+def _add_negative_font_rule(ws, cell_range: str) -> None:
+    if cell_range:
+        ws.conditional_formatting.add(cell_range, _negative_font_rule())
+
+
+def _apply_ctb_negative_formatting(
+    ws,
+    balance_rows: Sequence[int],
+    period_columns: Sequence[tuple[int, Period]],
+) -> None:
+    for row_idx in balance_rows:
+        _add_negative_font_rule(ws, f"{_cell_ref(row_idx, CTB_OVER_SHORTAGE_COL)}")
+        if period_columns:
+            _add_negative_font_rule(
+                ws,
+                _row_range_ref(row_idx, period_columns[0][0], period_columns[-1][0]),
+            )
+
+
+def _enable_formula_recalculation(wb: Workbook) -> None:
+    calc = getattr(wb, "calculation", None)
+    if calc is None:
+        return
+    calc.calcMode = "auto"
+    calc.fullCalcOnLoad = True
+    calc.forceFullCalc = True
 
 
 def _write_header(ws, periods: Sequence[Period]) -> int:
@@ -756,18 +955,21 @@ def _write_static_cells(ws, row_idx: int, part: CtbPart, row_type: str, key: str
     _clear_cell(ws.cell(row_idx, 1))
     _write_optional_text_cell(ws.cell(row_idx, 2), part.model)
     write_text_cell(ws.cell(row_idx, 3), part.part)
-    _write_optional_text_cell(ws.cell(row_idx, 4), key_value)
+    if row_type.casefold() == "eta" and po is not None:
+        _write_formula_cell(ws.cell(row_idx, 4), f"={_cell_ref(row_idx, 3)}&{_cell_ref(row_idx, 5)}")
+    else:
+        _write_optional_text_cell(ws.cell(row_idx, 4), key_value)
     _write_optional_text_cell(ws.cell(row_idx, 5), supplier_site)
     _write_optional_text_cell(ws.cell(row_idx, 6), part.vendor)
     _clear_cell(ws.cell(row_idx, 7))
     _clear_cell(ws.cell(row_idx, 8))
     _clear_cell(ws.cell(row_idx, 9))
     if shortage and row_type.lower().startswith("balance"):
-        write_number_cell(ws.cell(row_idx, 10), clean_number(shortage.over_shortage))
+        _write_formula_cell(ws.cell(row_idx, CTB_OVER_SHORTAGE_COL), _over_shortage_lookup_formula(row_idx))
     else:
-        _clear_cell(ws.cell(row_idx, 10))
-    _clear_cell(ws.cell(row_idx, 11))
-    _clear_cell(ws.cell(row_idx, 12))
+        _clear_cell(ws.cell(row_idx, CTB_OVER_SHORTAGE_COL))
+    _clear_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL))
+    _clear_cell(ws.cell(row_idx, CTB_TOTAL_COL))
     write_text_cell(ws.cell(row_idx, 13), row_type)
 
 
@@ -777,6 +979,8 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
     start_col = _write_header(ws, periods)
     last_period_col = start_col + len(periods) - 1
     end_col = _write_generated_summary_headers(ws, last_period_col + 1)
+    summary_demand_col = last_period_col + 1
+    summary_po_col = last_period_col + 2
     period_columns = [(start_col + idx, period) for idx, period in enumerate(periods)]
     po_remain_period_idx = _last_by_day_period_index(period_columns)
 
@@ -787,10 +991,13 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
     }
     row_idx = 5
     demand_rows = eta_rows = other_rows = balance_rows = 0
+    balance_row_indices: list[int] = []
     for part in parts:
+        demand_row = row_idx
         _write_static_cells(ws, row_idx, part, "Demand")
         for offset, value in enumerate(part.demand, start=start_col):
             write_number_cell(ws.cell(row_idx, offset), clean_number(value))
+        _write_formula_cell(ws.cell(row_idx, summary_demand_col), _sum_period_formula(row_idx, period_columns))
         demand_rows += 1
         row_idx += 1
 
@@ -799,51 +1006,47 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
         for record in part.open_po:
             po_by_key.setdefault(record.key, record)
 
-        eta_total_by_period = [0.0] * len(periods)
+        eta_row_indices: list[int] = []
         eta_items = list(schedules.items())
         if not eta_items:
             eta_items = [("", [0.0] * len(periods))]
         for key, schedule in eta_items:
+            eta_row = row_idx
+            eta_row_indices.append(eta_row)
             record = po_by_key.get(key)
             _write_static_cells(ws, row_idx, part, "ETA", key=key, po=record)
-            key_total = sum(r.quantity_due for r in part.open_po if r.key == key)
-            write_number_cell(ws.cell(row_idx, 11), clean_number(key_total))
-            write_number_cell(ws.cell(row_idx, 12), clean_number(sum(schedule)))
+            _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), _open_po_lookup_formula(row_idx))
+            _write_formula_cell(ws.cell(row_idx, CTB_TOTAL_COL), _sum_period_formula(row_idx, period_columns))
+            _write_formula_cell(ws.cell(row_idx, summary_po_col), _sum_period_formula(row_idx, period_columns))
             for idx, value in enumerate(schedule):
-                eta_total_by_period[idx] += value
                 write_number_cell(ws.cell(row_idx, start_col + idx), clean_number(value))
             eta_rows += 1
             row_idx += 1
 
-        other_total_by_period = [0.0] * len(periods)
+        other_row = row_idx
         _write_static_cells(ws, row_idx, part, "other")
-        for offset, value in enumerate(other_total_by_period, start=start_col):
-            write_number_cell(ws.cell(row_idx, offset), clean_number(value))
+        for offset in range(start_col, last_period_col + 1):
+            write_number_cell(ws.cell(row_idx, offset), 0)
         other_rows += 1
         row_idx += 1
 
-        shortage_value = part.shortage.over_shortage if part.shortage else 0.0
-        balance = [0.0] * len(periods)
-        if periods:
-            balance[0] = shortage_value + sum(part.demand[1:])
-            for idx in range(1, len(periods)):
-                balance[idx] = (
-                    balance[idx - 1]
-                    + eta_total_by_period[idx - 1]
-                    - part.demand[idx]
-                    - other_total_by_period[idx]
-                )
+        balance_row = row_idx
         _write_static_cells(ws, row_idx, part, "Balance")
         if part.shortage:
-            write_number_cell(ws.cell(row_idx, 10), clean_number(part.shortage.over_shortage))
-            po_remain_value = (
-                shortage_value - balance[po_remain_period_idx]
-                if po_remain_period_idx is not None and po_remain_period_idx < len(balance)
-                else part.shortage.po_remain
-            )
-            write_number_cell(ws.cell(row_idx, 11), clean_number(po_remain_value))
-        for offset, value in enumerate(balance, start=start_col):
-            write_number_cell(ws.cell(row_idx, offset), clean_number(value))
+            po_remain_formula = _po_remain_formula(balance_row, period_columns, po_remain_period_idx)
+            if po_remain_formula is not None:
+                _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), po_remain_formula)
+            else:
+                write_number_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), clean_number(part.shortage.po_remain))
+        _write_balance_formulas(
+            ws,
+            balance_row,
+            demand_row,
+            eta_row_indices,
+            [other_row],
+            period_columns,
+        )
+        balance_row_indices.append(balance_row)
         balance_rows += 1
         row_idx += 1
 
@@ -859,6 +1062,7 @@ def write_ctb_sheet(wb: Workbook, periods: Sequence[Period], parts: Sequence[Ctb
             for cell in row:
                 cell.fill = fill
 
+    _apply_ctb_negative_formatting(ws, balance_row_indices, period_columns)
     ws.freeze_panes = None
     set_filter_to_used_range(ws, end_col, row_idx - 1)
     autosize(ws, maximum=20)
@@ -947,7 +1151,7 @@ def _template_part_for_row(
     parts_by_part: dict[str, CtbPart],
     shortage: dict[str, ShortageRecord],
 ) -> CtbPart | None:
-    part_no = _cell_text(ws.cell(row_idx, 3).value)
+    part_no = normalize_part_number(ws.cell(row_idx, 3).value)
     if not part_no:
         return None
     part = parts_by_part.get(part_no)
@@ -1090,8 +1294,7 @@ def _write_template_eta_static(ws, row_idx: int, record: OpenPoRecord | None) ->
         _clear_cell(ws.cell(row_idx, 5))
         _clear_cell(ws.cell(row_idx, 7))
         return
-    part_no = _cell_text(ws.cell(row_idx, 3).value)
-    write_text_cell(ws.cell(row_idx, 4), _eta_key(part_no, record.supplier_site))
+    _write_formula_cell(ws.cell(row_idx, 4), f"={_cell_ref(row_idx, 3)}&{_cell_ref(row_idx, 5)}")
     _write_optional_text_cell(ws.cell(row_idx, 5), record.supplier_site)
     _clear_cell(ws.cell(row_idx, 7))
 
@@ -1109,21 +1312,6 @@ def _formula_sum_col_range(formula) -> tuple[int, int] | None:
     return (
         column_index_from_string(match.group(1)),
         column_index_from_string(match.group(2)),
-    )
-
-
-def _sum_period_values_for_col_range(
-    period_columns: Sequence[tuple[int, Period]],
-    values: Sequence[float],
-    col_range: tuple[int, int] | None,
-) -> float:
-    if col_range is None:
-        return sum(values)
-    start_col, end_col = col_range
-    return sum(
-        values[idx]
-        for idx, (col, _period) in enumerate(period_columns)
-        if idx < len(values) and start_col <= col <= end_col
     )
 
 
@@ -1153,35 +1341,6 @@ def _last_by_day_period_index(period_columns: Sequence[tuple[int, Period]]) -> i
     return last_idx
 
 
-def _calculate_template_balance(
-    period_columns: Sequence[tuple[int, Period]],
-    demand: Sequence[float],
-    eta: Sequence[float],
-    other: Sequence[float],
-    shortage_value: float,
-    initial_sum_cols: tuple[int, int] | None,
-) -> list[float]:
-    if not period_columns:
-        return []
-    balance = [0.0] * len(period_columns)
-    if initial_sum_cols is None:
-        initial_demand = sum(demand[1:])
-    else:
-        start_col, end_col = initial_sum_cols
-        initial_demand = sum(
-            demand[idx]
-            for idx, (col, _period) in enumerate(period_columns)
-            if start_col <= col <= end_col
-        )
-    balance[0] = shortage_value + initial_demand
-    for idx in range(1, len(period_columns)):
-        prev_eta = eta[idx - 1] if idx - 1 < len(eta) else 0.0
-        current_demand = demand[idx] if idx < len(demand) else 0.0
-        current_other = other[idx] if idx < len(other) else 0.0
-        balance[idx] = balance[idx - 1] + prev_eta - current_demand - current_other
-    return balance
-
-
 def _process_template_group(
     ws,
     formula_ws,
@@ -1200,15 +1359,17 @@ def _process_template_group(
         return {"demand_rows": 0, "eta_rows": 0, "other_rows": 0, "balance_rows": 0}
 
     demand_values = _values_for_template_periods(source_periods, part.demand, template_periods)
-    eta_total_by_period = [0.0] * len(template_periods)
-    other_total_by_period = [0.0] * len(template_periods)
     stats = {"demand_rows": 0, "eta_rows": 0, "other_rows": 0, "balance_rows": 0}
     first_tail_col = period_columns[-1][0] + 1 if period_columns else ws.max_column + 1
     po_remain_period_idx = _last_by_day_period_index(period_columns)
+    demand_row_indices: list[int] = []
+    eta_row_indices: list[int] = []
+    other_row_indices: list[int] = []
 
     for row_idx in group_rows:
         row_type = _ctb_row_type(ws, row_idx)
         if row_type.casefold() == "demand":
+            demand_row_indices.append(row_idx)
             _write_template_part_static(ws, row_idx, part, row_type)
             _clear_cell(ws.cell(row_idx, 10))
             _clear_cell(ws.cell(row_idx, 11))
@@ -1218,62 +1379,68 @@ def _process_template_group(
             demand_col = summary_columns.get("demand")
             if demand_col:
                 demand_sum_range = _formula_sum_col_range(formula_ws.cell(row_idx, demand_col).value)
-                demand_total = _sum_period_values_for_col_range(period_columns, demand_values, demand_sum_range)
-                write_number_cell(ws.cell(row_idx, demand_col), clean_number(demand_total))
+                _write_formula_cell(
+                    ws.cell(row_idx, demand_col),
+                    _sum_period_formula(row_idx, period_columns, demand_sum_range),
+                )
             stats["demand_rows"] += 1
         elif row_type.casefold() == "eta":
-            key = _cell_text(ws.cell(row_idx, 4).value)
+            eta_row_indices.append(row_idx)
+            key = normalize_part_number(ws.cell(row_idx, 4).value)
             records = open_po_by_key.get(key, [])
             schedule = _schedule_for_template_periods(template_periods, records)
-            for idx, value in enumerate(schedule):
-                eta_total_by_period[idx] += value
             _write_template_part_static(ws, row_idx, part, row_type)
             _write_template_eta_static(ws, row_idx, records[0] if records else None)
-            write_number_cell(ws.cell(row_idx, 11), clean_number(sum(record.quantity_due for record in records)))
-            write_number_cell(ws.cell(row_idx, 12), clean_number(sum(schedule)))
+            _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), _open_po_lookup_formula(row_idx))
+            _write_formula_cell(ws.cell(row_idx, CTB_TOTAL_COL), _sum_period_formula(row_idx, period_columns))
             _write_period_values(ws, row_idx, period_columns, schedule)
             _clear_tail_values(ws, row_idx, first_tail_col)
             po_col = summary_columns.get("po")
             if po_col:
-                write_number_cell(ws.cell(row_idx, po_col), clean_number(sum(schedule)))
+                po_sum_range = _formula_sum_col_range(formula_ws.cell(row_idx, po_col).value)
+                _write_formula_cell(
+                    ws.cell(row_idx, po_col),
+                    _sum_period_formula(row_idx, period_columns, po_sum_range),
+                )
             stats["eta_rows"] += 1
         elif row_type.casefold() == "other":
+            other_row_indices.append(row_idx)
             _write_template_part_static(ws, row_idx, part, row_type)
             _clear_cell(ws.cell(row_idx, 10))
             _clear_cell(ws.cell(row_idx, 11))
             _clear_cell(ws.cell(row_idx, 12))
-            _write_period_values(ws, row_idx, period_columns, other_total_by_period)
+            _write_period_values(ws, row_idx, period_columns, [0.0] * len(template_periods))
             _clear_tail_values(ws, row_idx, first_tail_col)
             stats["other_rows"] += 1
 
+    demand_row = demand_row_indices[0] if demand_row_indices else first_row
     for row_idx in group_rows:
         row_type = _ctb_row_type(ws, row_idx)
         if not _is_balance_row_type(row_type):
             continue
-        shortage_value = part.shortage.over_shortage if part.shortage else 0.0
         initial_sum_cols = _formula_sum_col_range(formula_ws.cell(row_idx, period_columns[0][0]).value)
-        balance_values = _calculate_template_balance(
-            period_columns,
-            demand_values,
-            eta_total_by_period,
-            other_total_by_period,
-            shortage_value,
-            initial_sum_cols,
-        )
         _write_template_part_static(ws, row_idx, part, row_type)
-        write_number_cell(ws.cell(row_idx, 10), clean_number(shortage_value))
         po_remain_idx = po_remain_period_idx
         if po_remain_idx is None:
             po_remain_ref_col = _formula_negative_ref_col(formula_ws.cell(row_idx, 11).value)
             po_remain_idx = _period_index_for_column(period_columns, po_remain_ref_col)
-        if po_remain_idx is not None and po_remain_idx < len(balance_values):
-            write_number_cell(ws.cell(row_idx, 11), clean_number(shortage_value - balance_values[po_remain_idx]))
+        po_remain_formula = _po_remain_formula(row_idx, period_columns, po_remain_idx)
+        if part.shortage is not None and po_remain_formula is not None:
+            _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), po_remain_formula)
         elif part.shortage is not None:
             write_number_cell(ws.cell(row_idx, 11), clean_number(part.shortage.po_remain))
         else:
             _clear_cell(ws.cell(row_idx, 11))
         _clear_cell(ws.cell(row_idx, 12))
-        _write_period_values(ws, row_idx, period_columns, balance_values)
+        _write_balance_formulas(
+            ws,
+            row_idx,
+            demand_row,
+            eta_row_indices,
+            other_row_indices,
+            period_columns,
+            initial_sum_cols,
+        )
         _clear_tail_values(ws, row_idx, first_tail_col)
         stats["balance_rows"] += 1
 
@@ -1321,7 +1488,7 @@ def write_ctb_from_template(
             while row_idx <= ws.max_row and _ctb_row_type(ws, row_idx).casefold() != "demand":
                 row_idx += 1
             group_rows = list(range(group_start, row_idx))
-            part_no = _cell_text(ws.cell(group_start, 3).value)
+            part_no = normalize_part_number(ws.cell(group_start, 3).value)
             if part_no:
                 template_parts.add(part_no)
             stats = _process_template_group(
@@ -1340,6 +1507,12 @@ def write_ctb_from_template(
             other_rows += stats["other_rows"]
             balance_rows += stats["balance_rows"]
 
+        balance_row_indices = [
+            row
+            for row in range(5, ws.max_row + 1)
+            if _is_balance_row_type(_ctb_row_type(ws, row))
+        ]
+        _apply_ctb_negative_formatting(ws, balance_row_indices, period_columns)
         set_filter_to_used_range(ws, ws.max_column, ws.max_row)
         return {
             "mode": "template",
@@ -1361,13 +1534,13 @@ def generate_ctb(
     dps_pp_path: Path,
     bom_path: Path,
     open_po_path: Path,
-    shortage_path: Path,
+    over_shortage_path: Path,
     output_path: Path,
     template_path: Path | None = None,
 ) -> dict:
     periods, demand_by_parent = read_dps_pp(dps_pp_path)
     bom_rows = read_bom_rows(bom_path, periods, demand_by_parent)
-    shortage = read_shortage(shortage_path)
+    shortage = read_over_shortage(over_shortage_path)
     open_po = read_open_po(open_po_path)
     parts_by_part, part_order = build_part_map(periods, bom_rows, shortage, open_po)
     parts = filter_ctb_parts(parts_by_part, part_order)
@@ -1387,6 +1560,7 @@ def generate_ctb(
     copy_dps_pp_sheet(wb, dps_pp_path)
     write_auxiliary_sheets(wb, periods, bom_rows, shortage, open_po)
 
+    _enable_formula_recalculation(wb)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     return {
@@ -1394,10 +1568,10 @@ def generate_ctb(
         "dps_pp_source": dps_pp_path,
         "bom_source": bom_path,
         "open_po_source": open_po_path,
-        "shortage_source": shortage_path,
+        "over_shortage_source": over_shortage_path,
         "template_source": template_path if stats.get("mode") == "template" else None,
         "bom_rows": len(bom_rows),
-        "shortage_rows": len(shortage),
+        "over_shortage_rows": len(shortage),
         "open_po_rows": len(open_po),
         "output": output_path,
     }

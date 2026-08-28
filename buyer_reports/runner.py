@@ -927,7 +927,11 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
             raise SystemExit(f"找不到 {dps_pp_path}，請先成功產出 DPS+PP.xlsx")
         bom_path = find_workbook_with_sheet(context.input_dir, "BOM1", f"{title} BOM1")
         open_po_path = find_workbook_with_sheet(context.input_dir, "open po", f"{title} open po")
-        shortage_path = find_workbook_with_sheet(context.input_dir, "Shortage", f"{title} Shortage")
+        over_shortage_path = find_workbook_with_sheet(
+            context.input_dir,
+            "over shortage",
+            f"{title} over shortage",
+        )
         template_path = find_optional_workbook_with_sheet(context.input_dir, "CTB")
         if progress is not None:
             progress.step(f"{title}: 產出報表")
@@ -935,7 +939,7 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
             dps_pp_path=dps_pp_path,
             bom_path=bom_path,
             open_po_path=open_po_path,
-            shortage_path=shortage_path,
+            over_shortage_path=over_shortage_path,
             output_path=out_path,
             template_path=template_path,
         )
@@ -943,14 +947,14 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
         log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
         log(f"  BOM1 來源       ：{info['bom_source'].name}")
         log(f"  open po 來源    ：{info['open_po_source'].name}")
-        log(f"  Shortage 來源   ：{info['shortage_source'].name}")
+        log(f"  over shortage 來源：{info['over_shortage_source'].name}")
         if info.get("template_source") is not None:
             log(f"  CTB 版型來源    ：{info['template_source'].name}（只沿用列結構與格式，數值重算）")
         else:
             log("  CTB 版型來源    ：未提供，使用程式新建版面")
         log(
             f"  輸入資料        ：BOM {info['bom_rows']} 列，"
-            f"Shortage {info['shortage_rows']} 列，"
+            f"over shortage {info['over_shortage_rows']} 列，"
             f"open po {info['open_po_rows']} 列"
         )
         other_rows_text = (
