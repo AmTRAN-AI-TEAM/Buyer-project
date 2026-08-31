@@ -87,12 +87,14 @@ BuyerReports/
    若 Windows 顯示 SmartScreen 警告，請確認檔案來源可信後，點「更多資訊」再點「仍要執行」。
    首先請選擇本次要處理的客戶：AVTC、RAKEN 或「全部執行」。選擇 AVTC 時會略過 RAKEN 週次設定。
    選擇 RAKEN 或「全部執行」時，若 input/RAKEN 內有 Excel，會出現 RAKEN DPS+PP 週數選擇視窗；請選擇 2 週、3 週或 4 週，此選項只影響 output/RAKEN/DPS+PP.xlsx。
-   若選定客戶有 CTB 來源，接著會出現 CTB ETA Supplier Site 設定視窗。
-   已確認區與新偵測區的 Supplier Site 都可以選取並修改提前天數；輸入後按「套用此站點」即可看到「已設定」標記。
-   可在搜尋欄輸入部分關鍵字快速篩選 Supplier Site，例如輸入 OL 可找到包含 OL 的站點。
-   「全部套用預設值」按下後會先出現確認視窗；確認後才會將清單內所有站點套用目前預設值，預設為 15 天。
-   尚未完成設定的新偵測站點只會在狀態欄以紅底標示，完成套用後恢復一般底色。
-   若本次偵測到新的 Supplier Site，會先顯示警告視窗，標題與站點清單之間以空白行分隔。
+   若選定客戶有 CTB 來源，接著會出現 CTB ETA Supplier site 設定視窗。
+   已確認區與新偵測區的 Supplier site 都可以直接修改提前天數；雙擊數字後修改，按 Enter 會出現確認視窗。
+   可在搜尋欄輸入部分關鍵字快速篩選 Supplier site，例如輸入 OL 可找到包含 OL 的項目。
+   清單支援 Ctrl 多選、Shift 連續選取及 Ctrl+A 全選；輸入選取 Supplier site 的提前天數後，可按「套用選取項目」。
+   「全部套用預設值」按下後會先出現確認視窗；確認後才會將清單內所有 Supplier site 套用目前預設值，預設為 15 天。
+   尚未完成設定的新偵測 Supplier site 只會在狀態欄以紅底標示，完成套用後恢復一般底色。
+   各欄位表頭右側的 ↑/↓ 按鈕可依 Supplier site、提前天數與狀態進行順序／倒序排列；預設會將紅底的新偵測 Supplier site 排在前面。
+   若本次偵測到新的 Supplier site，會先顯示警告視窗，標題與項目清單之間以空白行分隔。
    設定完成後按「確定並開始執行」才會產出報表；按「取消執行」則取消本次執行。
    執行時會顯示階段式進度條。
 
@@ -165,14 +167,14 @@ dps_pp_dps_weeks_ahead 代表 DPS+PP 中 DPS 要保留幾週，會包含目前 b
 dps_pp_late_dps_mode = merge_to_cutoff 代表 DPS 截止日之後的數字併入 DPS 最後一天；drop 代表截止日之後的 DPS 不納入 DPS+PP，由 PP 接續週接手。
 Windows exe 雙擊執行時，RAKEN 的 dps_pp_dps_weeks_ahead 可由啟動畫面選擇 2 / 3 / 4 週，該次執行會以視窗選擇為準，不需修改 buyer_reports.ini。
 
-CTB ETA Supplier Site 設定：
+CTB ETA Supplier site 設定：
 1. ctb_eta_days.ini 的 default_lead_days 是預設提前天數，初始值為 15。
-2. [supplier_site] 是已確認區，所有站點都可以在 exe 的 ETA 設定視窗中修改。
-3. [supplier_site_new] 是新偵測區，新站點會先以預設值加入；下一次執行時會自動移到已確認區。
-4. 設定檔內但本次 open po 沒有出現的已確認 Supplier Site，也會列在設定視窗中，仍可修改。
+2. [supplier_site] 是已確認區，所有 Supplier site 都可以在 exe 的 ETA 設定視窗中修改。
+3. [supplier_site_new] 是新偵測區，新 Supplier site 會先以預設值加入；下一次執行時會自動移到已確認區。
+4. 設定檔內但本次 open po 沒有出現的已確認 Supplier site，也會列在設定視窗中，仍可修改。
 5. 設定完成後按「確定並開始執行」，修改會保存到 ctb_eta_days.ini，並套用到當次 CTB。
-6. 相同 Supplier Site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
-7. ETA 設定視窗可用關鍵字篩選 Supplier Site；新偵測且尚未完成設定的站點只會在狀態欄顯示紅底，完成套用後恢復一般底色。
+6. 相同 Supplier site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
+7. ETA 設定視窗可用關鍵字篩選 Supplier site；新偵測且尚未完成設定的 Supplier site 只會在狀態欄顯示紅底，完成套用後恢復一般底色。
 
 輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。DPS / PP 的 total 由程式先計算好，不使用 Excel 公式；CTB 主表的 OVER SHORTAGE、PO Remain、total、Demand / PO summary 與 Balance 期間欄會寫入 Excel 公式，方便使用者開檔後手動調整 ETA / other 並連動重算。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。CTB 會輸出 CTB、DPS+PP、BOM1、over shortage、open po 五張工作表，方便追溯；有原始 CTB 時會套用其表頭、日期欄、列結構與格式，但 A:M 資料列會由程式依 BOM1、open po、over shortage 來源欄位重建；沒有原始 CTB 時仍可新建 CTB。
 

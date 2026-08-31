@@ -215,12 +215,12 @@ def _read_ctb_eta_site_section(
         key = _supplier_site_config_key(site)
         if not key:
             had_invalid_value = True
-            warn(f"CTB ETA 設定忽略空白 Supplier Site。")
+            warn(f"CTB ETA 設定忽略空白 Supplier site。")
             continue
         days = parse_positive_int(
             raw_days,
             default_days,
-            f"CTB ETA Supplier Site {site}",
+            f"CTB ETA Supplier site {site}",
         )
         if str(raw_days).strip() != str(days):
             had_invalid_value = True
@@ -282,11 +282,11 @@ def _write_ctb_eta_config(
     divider = "# " + "＝" * 34
     lines = [
         f"[{CTB_ETA_CONFIG_SECTION}]",
-        "# CTB ETA 預設提前天數；未列出的 Supplier Site 使用此值。",
+        "# CTB ETA 預設提前天數；未列出的 Supplier site 使用此值。",
         f"default_lead_days = {default_days}",
         "",
         f"[{CTB_ETA_SITE_SECTION}]",
-        "# 已確認的 Supplier Site。",
+        "# 已確認的 Supplier site。",
     ]
     lines.extend(
         f"{display} = {days}"
@@ -296,7 +296,7 @@ def _write_ctb_eta_config(
         [
             "",
             divider,
-            "# 本次新偵測的 Supplier Site；下一次執行時會自動移到上方。",
+            "# 本次新偵測的 Supplier site；下一次執行時會自動移到上方。",
             divider,
             f"[{CTB_ETA_NEW_SITE_SECTION}]",
         ]

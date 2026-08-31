@@ -205,23 +205,26 @@ SITE_B = 20
 SITE_C = 15
 ```
 
-`default_lead_days` 是未個別設定站點時的預設提前天數；`[supplier_site]` 內可直接修改
-各 Supplier Site 的提前天數，允許填 `0`。第一次偵測到的站點會先放在
+`default_lead_days` 是未個別設定 Supplier site 時的預設提前天數；`[supplier_site]` 內可直接修改
+各 Supplier site 的提前天數，允許填 `0`。第一次偵測到的 Supplier site 會先放在
 `[supplier_site_new]`，並以預設值計算。執行時按 Enter 後，程式會詢問是否開啟設定檔；
-命令列回答 `Y` 時，若有新站點會先跳出警告視窗，再使用作業系統預設文字編輯器開啟檔案；
+命令列回答 `Y` 時，若有新 Supplier site 會先跳出警告視窗，再使用作業系統預設文字編輯器開啟檔案；
 編輯器關閉後按 Enter，當次 CTB 就會重新讀取設定。Windows exe 則會依序顯示客戶選擇、
 RAKEN 週次（適用時）與 ETA 設定視窗；已確認區與新偵測區都可以修改，按下「確定並開始執行」
 後才會產出報表。下一次執行時，上一輪的 `[supplier_site_new]` 會自動移到
 `[supplier_site]` 上方區域，並保留你修改過的天數。
 
-Windows ETA 設定視窗提供 Supplier Site 關鍵字搜尋，輸入部分文字即可篩選符合項目，清除後恢復全部站點。
-「全部套用預設值」按下後會先要求確認，確認後才將所有站點套用目前的預設提前天數；若本次有新偵測站點，
-尚未套用設定的站點會只在狀態欄以紅底標示，完成套用後恢復一般底色。新站點提醒視窗的標題與項目之間以空白行分隔。
+Windows ETA 設定視窗提供 Supplier site 關鍵字搜尋，輸入部分文字即可篩選符合項目，清除後恢復全部 Supplier site。
+表格中的提前天數可用雙擊直接編輯，按 Enter 後會要求確認；清單支援 Ctrl 多選、Shift 連續選取與 Ctrl+A，
+可在「將選取的 Supplier site 設定提前天數」列批次套用。各欄位表頭右側的 ↑/↓ 按鈕可依 Supplier site、提前天數或狀態進行順序／倒序排列，
+預設會將尚未設定的新 Supplier site 排在最前面。「全部套用預設值」按下後會先要求確認，確認後才將所有 Supplier site
+套用目前的預設提前天數；尚未套用設定的新 Supplier site 會只在狀態欄以紅底標示，完成套用後恢復一般底色。
+新 Supplier site 提醒視窗的標題與項目之間以空白行分隔。
 
 程式會直接使用作業系統預設的文字檔案應用程式開啟設定檔；檔案開啟後，程式會等待你
 編輯並關閉檔案，再按 Enter 繼續讀取設定。
-設定檔內但本次沒有出現在 open PO 的已確認 Supplier Site，也會列在 Windows ETA 設定視窗中，
-仍可修改。相同 Supplier Site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
+設定檔內但本次沒有出現在 open PO 的已確認 Supplier site，也會列在 Windows ETA 設定視窗中，
+仍可修改。相同 Supplier site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
 
 ## Windows 執行檔
 
@@ -247,10 +250,10 @@ BuyerReports/
 選擇的客戶才會在本次產出報表。選擇 RAKEN 或全部執行時，若適用，會先出現 RAKEN 週次選擇視窗。
 若 DPS 與 PP 來源都可用，也會產出 `DPS+PP.xlsx`。
 若該客戶資料夾內另有 `BOM1`、`open po`、`over shortage` 工作表，也會產出 `CTB.xlsx`。
-接著若選定客戶有 CTB 來源，會顯示 CTB ETA Supplier Site 設定視窗。已確認 Supplier Site
-與新偵測 Supplier Site 都可以選取並修改提前天數；可在搜尋欄輸入部分關鍵字篩選站點。
+接著若選定客戶有 CTB 來源，會顯示 CTB ETA Supplier site 設定視窗。已確認 Supplier site
+與新偵測 Supplier site 都可以選取並修改提前天數；可在搜尋欄輸入部分關鍵字篩選 Supplier site。
 「全部套用預設值」會先要求確認，確認後才將目前清單全部設為預設值，預設為 15 天。
-尚未完成設定的新偵測站點會只在狀態欄以紅底標示，完成套用後恢復一般底色。按「確定並開始執行」後才會繼續產出。
+尚未完成設定的新偵測 Supplier site 會只在狀態欄以紅底標示，完成套用後恢復一般底色。按「確定並開始執行」後才會繼續產出。
 exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用；
 請務必先完整解壓縮，不要在 zip 壓縮檔視窗內直接執行。
 若 SmartScreen 顯示「Windows 已保護你的電腦」，請確認來源可信後點

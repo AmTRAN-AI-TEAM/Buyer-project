@@ -407,7 +407,7 @@ def _collect_ctb_supplier_sites(args, contexts: Sequence[RunContext]) -> tuple[s
             )
             records = read_open_po(open_po_path)
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - CTB 本身會再回報來源錯誤
-            warn(f"{title} 無法讀取 Supplier Site，將使用既有設定。原因：{_error_message(exc)}")
+            warn(f"{title} 無法讀取 Supplier site，將使用既有設定。原因：{_error_message(exc)}")
             continue
         for record in records:
             display = str(record.supplier_site or "").strip()
@@ -421,7 +421,7 @@ def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
     if not new_sites:
         return
     message = (
-        "本次偵測到新的 Supplier Site：\n"
+        "本次偵測到新的 Supplier site：\n"
         "\n"
         + "\n".join(f"- {site}" for site in new_sites)
     )
@@ -441,7 +441,7 @@ def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
         finally:
             root.destroy()
     except Exception as exc:  # pragma: no cover - depends on local desktop/display
-        warn(f"無法開啟新的 Supplier Site 警告視窗，已改在終端機顯示。原因：{exc}")
+        warn(f"無法開啟新的 Supplier site 警告視窗，已改在終端機顯示。原因：{exc}")
         warn(message.replace("\n", "；"))
 
 
@@ -476,12 +476,14 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
 
     detected_keys = set(settings.get("detected_supplier_site_keys", ()))
     edited_keys: set[str] = set()
-    selected_key = {"value": None}
     result = {"value": None}
+    sort_state = {"column": "status", "reverse": False}
+    selection_anchor = {"key": None}
+    active_editor = {"widget": None, "key": None, "committing": False}
 
-    root.title("CTB ETA Supplier Site 設定")
-    root.geometry("820x620")
-    root.minsize(720, 500)
+    root.title("CTB ETA Supplier site 設定")
+    root.geometry("820x660")
+    root.minsize(720, 540)
     root.attributes("-topmost", True)
 
     main_frame = ttk.Frame(root, padding=16)
@@ -493,75 +495,72 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
 
     ttk.Label(
         main_frame,
-        text="CTB ETA Supplier Site 設定",
+        text="CTB ETA Supplier site 設定",
         font=("Microsoft JhengHei UI", 12, "bold"),
     ).grid(row=0, column=0, columnspan=3, sticky="w")
     ttk.Label(
         main_frame,
-        text="可修改已確認站點，也可設定本次新偵測站點；提前天數以日曆日計算。",
-    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 14))
+        text="可修改已確認 Supplier site，也可設定本次新偵測 Supplier site；提前天數以日曆日計算。",
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 12))
 
     default_days_var = tk.StringVar(value=str(settings["default_lead_days"]))
+    selected_days_var = tk.StringVar()
     search_var = tk.StringVar()
-    site_var = tk.StringVar()
-    site_days_var = tk.StringVar()
-    selected_status_var = tk.StringVar(value="")
 
     search_frame = ttk.Frame(main_frame)
     search_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 8))
-    ttk.Label(search_frame, text="搜尋 Supplier Site：").grid(row=0, column=0, sticky="w")
+    ttk.Label(search_frame, text="搜尋 Supplier site：").grid(row=0, column=0, sticky="w")
     search_entry = ttk.Entry(search_frame, textvariable=search_var, width=34)
     search_entry.grid(row=0, column=1, padx=(6, 10), sticky="w")
 
     default_frame = ttk.Frame(main_frame)
-    default_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+    default_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 8))
     ttk.Label(default_frame, text="預設提前天數（日）：").grid(row=0, column=0, sticky="w")
     default_entry = ttk.Entry(default_frame, textvariable=default_days_var, width=10)
     default_entry.grid(row=0, column=1, padx=(6, 10), sticky="w")
 
-    site_frame = ttk.Frame(main_frame)
-    site_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 10))
-    ttk.Label(site_frame, text="Supplier Site：").grid(row=0, column=0, sticky="w")
-    site_combo = ttk.Combobox(site_frame, textvariable=site_var, state="readonly", width=34)
-    site_combo.grid(row=0, column=1, padx=(6, 10), sticky="w")
-    ttk.Label(site_frame, text="提前天數（日）：").grid(row=0, column=2, sticky="w")
-    site_days_entry = ttk.Entry(site_frame, textvariable=site_days_var, width=10)
-    site_days_entry.grid(row=0, column=3, padx=(6, 10), sticky="w")
-    selected_status_label = ttk.Label(site_frame, textvariable=selected_status_var, width=18)
-    selected_status_label.grid(row=0, column=4, sticky="w")
+    selected_frame = ttk.Frame(main_frame)
+    selected_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+    ttk.Label(
+        selected_frame,
+        text="將選取的 Supplier site 設定提前天數：",
+    ).grid(row=0, column=0, sticky="w")
+    selected_days_entry = ttk.Entry(selected_frame, textvariable=selected_days_var, width=10)
+    selected_days_entry.grid(row=0, column=1, padx=(6, 10), sticky="w")
 
     table_frame = ttk.Frame(main_frame)
     table_frame.grid(row=5, column=0, columnspan=3, sticky="nsew")
     table_frame.columnconfigure(0, weight=1)
-    table_frame.rowconfigure(0, weight=1)
+    table_frame.columnconfigure(1, minsize=220)
+    table_frame.rowconfigure(1, weight=1)
     tree = ttk.Treeview(
         table_frame,
         columns=("site", "days"),
-        show="headings",
-        selectmode="browse",
+        show="",
+        selectmode="extended",
     )
-    tree.heading("site", text="Supplier Site")
+    tree.heading("site", text="Supplier site")
     tree.heading("days", text="提前天數（日）")
     tree.column("site", width=320, anchor="w", stretch=True)
-    tree.column("days", width=130, anchor="center", stretch=False)
-    tree.grid(row=0, column=0, sticky="nsew")
+    tree.column("days", width=160, anchor="center", stretch=False)
+    tree.grid(row=1, column=0, sticky="nsew")
 
     status_tree = ttk.Treeview(
         table_frame,
         columns=("status",),
-        show="headings",
+        show="",
         selectmode="none",
     )
     status_tree.heading("status", text="狀態")
     status_tree.column("status", width=220, anchor="w", stretch=False)
-    status_tree.grid(row=0, column=1, sticky="nsew")
+    status_tree.grid(row=1, column=1, sticky="nsew")
 
     def scroll_trees(*args) -> None:
         tree.yview(*args)
         status_tree.yview(*args)
 
     scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=scroll_trees)
-    scrollbar.grid(row=0, column=2, sticky="ns")
+    scrollbar.grid(row=1, column=2, sticky="ns")
 
     def sync_status_scroll(first, last) -> None:
         status_tree.yview_moveto(first)
@@ -572,16 +571,13 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
 
     ttk.Label(
         main_frame,
-        text="設定檔內但本次未偵測到的站點仍可修改；新站點會在下一次執行時移至已確認區。",
+        text="新 Supplier site 會在下一次執行時移至已確認設定區。",
     ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 12))
 
     button_frame = ttk.Frame(main_frame)
     button_frame.grid(row=7, column=0, columnspan=3, sticky="e")
 
     row_iids: dict[str, str] = {}
-    display_to_key = {
-        entry["display"].casefold(): key for key, entry in entries.items()
-    }
 
     def parse_days(raw_value: str, label: str) -> int | None:
         try:
@@ -597,7 +593,7 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
     def status_for(key: str) -> str:
         entry = entries[key]
         if key in edited_keys:
-            return "已填寫（新站點）" if entry["section"] == "new" else "已設定"
+            return "已填寫（新 Supplier site）" if entry["section"] == "new" else "已設定"
         if entry["section"] == "new":
             return "新偵測"
         if key not in detected_keys:
@@ -610,30 +606,39 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
             return ("new_supplier_site_status",)
         return ()
 
+    def status_sort_rank(key: str) -> int:
+        if status_tag_for(key):
+            return 0
+        if entries[key]["section"] == "new":
+            return 1
+        if key in detected_keys:
+            return 2
+        return 3
+
     def filtered_keys() -> list[str]:
         query = search_var.get().strip().casefold()
-        if not query:
-            return list(entries)
-        return [
+        visible = [
             key
             for key, entry in entries.items()
-            if query in entry["display"].casefold()
+            if not query or query in entry["display"].casefold()
         ]
+        if sort_state["column"] == "site":
+            key_func = lambda key: (entries[key]["display"].casefold(),)
+        elif sort_state["column"] == "days":
+            key_func = lambda key: (entries[key]["days"], entries[key]["display"].casefold())
+        else:
+            key_func = lambda key: (status_sort_rank(key), entries[key]["display"].casefold())
+        return sorted(visible, key=key_func, reverse=sort_state["reverse"])
 
-    def select_entry(key: str | None) -> None:
-        selected_key["value"] = key
-        if key is None:
-            site_var.set("")
-            site_days_var.set("")
-            selected_status_var.set("")
-            return
-        entry = entries[key]
-        site_var.set(entry["display"])
-        site_days_var.set(str(entry["days"]))
-        selected_status_var.set(status_for(key))
+    def selected_keys() -> set[str]:
+        return {
+            row_iids[item_id]
+            for item_id in tree.selection()
+            if item_id in row_iids
+        }
 
     def refresh_tree() -> None:
-        current_key = selected_key["value"]
+        preserved_keys = selected_keys()
         visible_keys = filtered_keys()
         for widget in (tree, status_tree):
             for item_id in widget.get_children():
@@ -656,43 +661,101 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
                 values=(status_for(key),),
                 tags=status_tag_for(key),
             )
-        site_combo["values"] = tuple(entries[key]["display"] for key in visible_keys)
-        if current_key not in visible_keys:
-            current_key = visible_keys[0] if visible_keys else None
-        if current_key is not None:
-            select_entry(current_key)
-            item_id = next(item for item, key in row_iids.items() if key == current_key)
-            tree.selection_set(item_id)
-            tree.focus(item_id)
-        else:
-            select_entry(None)
+        restored_items = [
+            item_id for item_id, key in row_iids.items() if key in preserved_keys
+        ]
+        if restored_items:
+            tree.selection_set(restored_items)
+            tree.focus(restored_items[-1])
+        elif visible_keys:
+            tree.selection_set(())
+        selection_anchor["key"] = (
+            selection_anchor["key"]
+            if selection_anchor["key"] in visible_keys
+            else None
+        )
         tree.yview_moveto(0)
         status_tree.yview_moveto(0)
 
-    def on_tree_select(_event=None) -> None:
-        selection = tree.selection()
-        if selection and selection[0] in row_iids:
-            select_entry(row_iids[selection[0]])
+    def sort_entries(column: str, reverse: bool) -> None:
+        sort_state["column"] = column
+        sort_state["reverse"] = reverse
+        refresh_tree()
 
-    def on_combo_select(_event=None) -> None:
-        key = display_to_key.get(site_var.get().casefold())
-        if key is None:
-            return
-        select_entry(key)
-        item_id = next(
-            (item for item, entry_key in row_iids.items() if entry_key == key),
-            None,
-        )
-        if item_id is not None:
-            tree.selection_set(item_id)
-            tree.focus(item_id)
+    def make_sort_header(parent, title: str, column: str):
+        header = ttk.Frame(parent, relief="raised", borderwidth=1)
+        header.columnconfigure(0, weight=1)
+        ttk.Label(
+            header,
+            text=title,
+            anchor="center",
+            style="Treeview.Heading",
+        ).grid(row=0, column=0, sticky="ew", padx=(4, 2))
+        ttk.Button(
+            header,
+            text="↑",
+            width=2,
+            command=lambda: sort_entries(column, False),
+        ).grid(row=0, column=1, padx=(0, 1), pady=1)
+        ttk.Button(
+            header,
+            text="↓",
+            width=2,
+            command=lambda: sort_entries(column, True),
+        ).grid(row=0, column=2, padx=(0, 2), pady=1)
+        return header
+
+    def clear_search() -> None:
+        search_var.set("")
+        search_entry.focus_set()
+
+    def select_all(_event=None) -> str:
+        visible_items = tree.get_children()
+        if visible_items:
+            tree.selection_set(visible_items)
+            tree.focus(visible_items[0])
+            selection_anchor["key"] = row_iids[visible_items[0]]
+        return "break"
+
+    def record_tree_click(event) -> None:
+        item_id = tree.identify_row(event.y)
+        if item_id and not (event.state & 0x0001 or event.state & 0x0004):
+            selection_anchor["key"] = row_iids[item_id]
 
     def on_status_click(event) -> str:
         item_id = status_tree.identify_row(event.y)
-        if item_id in row_iids:
+        if item_id not in row_iids:
+            return "break"
+        tree.focus_set()
+        visible_items = list(tree.get_children())
+        index = visible_items.index(item_id)
+        control_pressed = bool(event.state & 0x0004)
+        shift_pressed = bool(event.state & 0x0001)
+        anchor = next(
+            (
+                visible_item
+                for visible_item, key in row_iids.items()
+                if key == selection_anchor["key"]
+            ),
+            None,
+        )
+        if anchor not in visible_items:
+            anchor = tree.focus() if tree.focus() in visible_items else item_id
+
+        if shift_pressed:
+            anchor_index = visible_items.index(anchor)
+            start, end = sorted((anchor_index, index))
+            range_items = visible_items[start : end + 1]
+            if control_pressed:
+                tree.selection_add(range_items)
+            else:
+                tree.selection_set(range_items)
+        elif control_pressed:
+            tree.selection_toggle(item_id)
+        else:
             tree.selection_set(item_id)
-            tree.focus(item_id)
-            select_entry(row_iids[item_id])
+            selection_anchor["key"] = row_iids[item_id]
+        tree.focus(item_id)
         return "break"
 
     def on_tree_mousewheel(event) -> str:
@@ -704,27 +767,99 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
         tree.yview_scroll(amount, "units")
         return "break"
 
-    def apply_site() -> None:
-        key = selected_key["value"]
-        if key is None:
+    def close_inline_editor() -> None:
+        editor = active_editor["widget"]
+        if editor is not None:
+            editor.destroy()
+        active_editor["widget"] = None
+        active_editor["key"] = None
+        active_editor["committing"] = False
+
+    def cancel_inline_editor(_event=None) -> str:
+        if not active_editor["committing"]:
+            close_inline_editor()
+        return "break"
+
+    def commit_inline_editor(key: str, editor) -> str:
+        if active_editor["widget"] is not editor:
+            return "break"
+        days = parse_days(editor.get(), "Supplier site 提前天數")
+        if days is None:
+            editor.focus_set()
+            return "break"
+        active_editor["committing"] = True
+        confirmed = messagebox.askyesno(
+            "確認修改",
+            f"確定將 {entries[key]['display']} 的提前天數設定為 {days} 天嗎？",
+            parent=root,
+        )
+        if confirmed:
+            entries[key]["days"] = days
+            edited_keys.add(key)
+        close_inline_editor()
+        if confirmed:
+            refresh_tree()
+        return "break"
+
+    def start_inline_editor(event) -> None:
+        item_id = tree.identify_row(event.y)
+        column_id = tree.identify_column(event.x)
+        if item_id not in row_iids or column_id != "#2":
             return
-        days = parse_days(site_days_var.get(), "Supplier Site 提前天數")
+        close_inline_editor()
+        bbox = tree.bbox(item_id, column_id)
+        if not bbox:
+            return
+        key = row_iids[item_id]
+        _x, y, width, height = bbox
+        editor = ttk.Entry(tree, justify="center")
+        editor.insert(0, str(entries[key]["days"]))
+        editor.select_range(0, "end")
+        editor.place(x=_x, y=y, width=width, height=height)
+        active_editor["widget"] = editor
+        active_editor["key"] = key
+        editor.focus_set()
+        editor.bind("<Return>", lambda _event: commit_inline_editor(key, editor))
+        editor.bind("<Escape>", cancel_inline_editor)
+        editor.bind(
+            "<FocusOut>",
+            lambda _event: root.after_idle(
+                lambda: cancel_inline_editor()
+                if not active_editor["committing"]
+                else None
+            ),
+        )
+
+    def apply_selected() -> None:
+        keys = selected_keys()
+        if not keys:
+            messagebox.showwarning(
+                "未選取 Supplier site",
+                "請先選取至少一個 Supplier site。",
+                parent=root,
+            )
+            return
+        days = parse_days(selected_days_var.get(), "選取 Supplier site 提前天數")
         if days is None:
             return
-        entries[key]["days"] = days
-        edited_keys.add(key)
+        if not messagebox.askyesno(
+            "確認修改",
+            f"確定將選取的 {len(keys)} 個 Supplier site 設定為 {days} 天嗎？",
+            parent=root,
+        ):
+            return
+        for key in keys:
+            entries[key]["days"] = days
+            edited_keys.add(key)
         refresh_tree()
-        selected_status_var.set(status_for(key))
 
     def apply_default_to_all() -> None:
         default_days = parse_days(default_days_var.get(), "預設提前天數")
-        if default_days is None:
-            return
-        if not entries:
+        if default_days is None or not entries:
             return
         if not messagebox.askyesno(
             "確認套用預設值",
-            f"確定要將全部 {len(entries)} 個 Supplier Site 的提前天數設為 "
+            f"確定要將全部 {len(entries)} 個 Supplier site 的提前天數設為 "
             f"{default_days} 天嗎？",
             parent=root,
         ):
@@ -733,8 +868,12 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
             entry["days"] = default_days
             edited_keys.add(key)
         refresh_tree()
-        if selected_key["value"] is not None:
-            selected_status_var.set(status_for(selected_key["value"]))
+
+    def on_escape(_event=None) -> str:
+        if active_editor["widget"] is not None:
+            return cancel_inline_editor()
+        root.destroy()
+        return "break"
 
     def confirm() -> None:
         default_days = parse_days(default_days_var.get(), "預設提前天數")
@@ -763,16 +902,11 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
         result["value"] = saved
         root.destroy()
 
-    def cancel() -> None:
-        root.destroy()
-
-    def clear_search() -> None:
-        search_var.set("")
-        search_entry.focus_set()
-
     search_var.trace_add("write", lambda *_args: refresh_tree())
-    site_combo.bind("<<ComboboxSelected>>", on_combo_select)
-    tree.bind("<<TreeviewSelect>>", on_tree_select)
+    tree.bind("<Button-1>", record_tree_click, add="+")
+    tree.bind("<Double-1>", start_inline_editor)
+    tree.bind("<Control-a>", select_all)
+    tree.bind("<Control-A>", select_all)
     status_tree.bind("<Button-1>", on_status_click)
     for widget in (tree, status_tree):
         widget.bind("<MouseWheel>", on_tree_mousewheel)
@@ -783,34 +917,45 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
         background="#f4cccc",
         foreground="#9c0006",
     )
-    ttk.Button(search_frame, text="清除", command=clear_search).grid(
+
+    header_main = ttk.Frame(table_frame)
+    header_main.grid(row=0, column=0, sticky="nsew")
+    header_main.columnconfigure(0, weight=1)
+    header_main.columnconfigure(1, minsize=160)
+    make_sort_header(header_main, "Supplier site", "site").grid(
         row=0,
-        column=2,
+        column=0,
+        sticky="nsew",
     )
+    make_sort_header(header_main, "提前天數（日）", "days").grid(
+        row=0,
+        column=1,
+        sticky="nsew",
+    )
+    make_sort_header(table_frame, "狀態", "status").grid(
+        row=0,
+        column=1,
+        sticky="nsew",
+    )
+
+    ttk.Button(search_frame, text="清除", command=clear_search).grid(row=0, column=2)
     ttk.Button(
         default_frame,
         text="全部套用預設值",
         command=apply_default_to_all,
     ).grid(row=0, column=2, padx=(0, 10))
-    ttk.Button(site_frame, text="套用此站點", command=apply_site).grid(
-        row=1,
-        column=0,
-        columnspan=5,
-        sticky="e",
-        pady=(6, 0),
-    )
-    ttk.Button(button_frame, text="取消執行", command=cancel).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(
+        selected_frame,
+        text="套用選取項目",
+        command=apply_selected,
+    ).grid(row=0, column=2, padx=(0, 10))
+    ttk.Button(button_frame, text="取消執行", command=root.destroy).grid(row=0, column=0, padx=(0, 8))
     ttk.Button(button_frame, text="確定並開始執行", command=confirm).grid(row=0, column=1)
+    selected_days_entry.bind("<Return>", lambda _event: apply_selected())
 
     refresh_tree()
-    if entries:
-        select_entry(next(iter(entries)))
-    else:
-        site_combo.configure(state="disabled")
-        site_days_entry.configure(state="disabled")
-        selected_status_label.configure(text="沒有 Supplier Site")
-    root.protocol("WM_DELETE_WINDOW", cancel)
-    root.bind("<Escape>", lambda _event: cancel())
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.bind("<Escape>", on_escape)
     root.grab_set()
     _center_tk_window(root)
     root.mainloop()
@@ -865,7 +1010,7 @@ def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
     log(f"CTB ETA 設定檔：{settings['path']}")
     log(
         f"CTB ETA 天數    ：預設 {settings['default_lead_days']} 天，"
-        f"Supplier Site 覆寫 {len(settings['lead_days_by_supplier_site'])} 項"
+        f"Supplier site 覆寫 {len(settings['lead_days_by_supplier_site'])} 項"
     )
     if settings["promoted_supplier_sites"]:
         log(
@@ -874,7 +1019,7 @@ def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
         )
     if settings["new_supplier_sites"]:
         log()
-        log("CTB ETA 新 Supplier Site（目前先使用預設天數）：")
+        log("CTB ETA 新 Supplier site（目前先使用預設天數）：")
         for site in settings["new_supplier_sites"]:
             log(f"  - {site}")
         log()
@@ -894,7 +1039,7 @@ def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
         return
 
     try:
-        answer = input("是否要開啟 CTB ETA Supplier Site 設定檔調整天數？(Y/N)：")
+        answer = input("是否要開啟 CTB ETA Supplier site 設定檔調整天數？(Y/N)：")
     except EOFError:
         answer = "N"
     if answer.strip().casefold() not in {"y", "yes"}:
@@ -1587,12 +1732,12 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
             f"{template_rows_text}"
         )
         log(
-            f"  ETA 日期規則    ：逐筆模擬 Balance，第一個負值期間依 Supplier Site 往前"
+            f"  ETA 日期規則    ：逐筆模擬 Balance，第一個負值期間依 Supplier site 往前"
             f" {args.ctb_eta_default_lead_days} 個日曆日（未覆寫時）；"
             "若無負值則 fallback 至 open po Need By Date"
         )
         log(
-            f"  ETA 站點覆寫    ：{len(args.ctb_eta_lead_days_by_supplier_site)} 項，"
+            f"  ETA Supplier site 覆寫：{len(args.ctb_eta_lead_days_by_supplier_site)} 項，"
             f"設定檔 {args.ctb_eta_config_path}"
         )
         log(f"  產出檔          ：{out_path}")
