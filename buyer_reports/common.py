@@ -11,7 +11,7 @@ import sys
 import tempfile
 from copy import copy
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from openpyxl.utils import get_column_letter
 
@@ -311,6 +311,37 @@ def _write_ctb_eta_config(
     os.replace(temp_path, path)
 
 
+def _ctb_eta_settings_result(
+    path: Path,
+    default_days: int,
+    main_entries: dict[str, tuple[str, int]],
+    pending_entries: dict[str, tuple[str, int]],
+    *,
+    detected_keys: Sequence[str] = (),
+    new_sites: Sequence[str] = (),
+    promoted_sites: Sequence[str] = (),
+    changed: bool = False,
+) -> dict:
+    active_entries = dict(pending_entries)
+    active_entries.update(main_entries)
+    return {
+        "path": path,
+        "default_lead_days": default_days,
+        "lead_days_by_supplier_site": {
+            key: days for key, (_display, days) in active_entries.items()
+        },
+        "confirmed_supplier_site_entries": dict(main_entries),
+        "new_supplier_site_entries": dict(pending_entries),
+        "detected_supplier_site_keys": tuple(detected_keys),
+        "detected_supplier_sites": tuple(
+            entry[0] for key, entry in active_entries.items() if key in detected_keys
+        ),
+        "new_supplier_sites": tuple(new_sites),
+        "promoted_supplier_sites": tuple(promoted_sites),
+        "changed": changed,
+    }
+
+
 def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[str]) -> dict:
     """Sync detected Supplier Sites while preserving saved ETA lead times."""
     path = root / CTB_ETA_CONFIG_FILE_NAME
@@ -342,37 +373,70 @@ def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[str]) -> dict:
     if changed:
         _write_ctb_eta_config(path, default_days, main_entries, pending_entries)
 
-    active_entries = dict(pending_entries)
-    active_entries.update(main_entries)
-    return {
-        "path": path,
-        "default_lead_days": default_days,
-        "lead_days_by_supplier_site": {
-            key: days for key, (_display, days) in active_entries.items()
-        },
-        "detected_supplier_sites": tuple(detected.values()),
-        "new_supplier_sites": tuple(new_sites),
-        "promoted_supplier_sites": tuple(promoted_sites),
-        "changed": changed,
-    }
+    return _ctb_eta_settings_result(
+        path,
+        default_days,
+        main_entries,
+        pending_entries,
+        detected_keys=tuple(detected),
+        new_sites=new_sites,
+        promoted_sites=promoted_sites,
+        changed=changed,
+    )
 
 
 def load_ctb_eta_config(path: Path) -> dict:
     """Read the current CTB ETA settings after optional user editing."""
     default_days, main_entries, pending_entries, _needs_normalization = _read_ctb_eta_config_file(path)
-    active_entries = dict(pending_entries)
-    active_entries.update(main_entries)
-    return {
-        "path": path,
-        "default_lead_days": default_days,
-        "lead_days_by_supplier_site": {
-            key: days for key, (_display, days) in active_entries.items()
-        },
-        "new_supplier_sites": tuple(display for display, _days in pending_entries.values()),
-        "promoted_supplier_sites": (),
-        "detected_supplier_sites": (),
-        "changed": False,
-    }
+    return _ctb_eta_settings_result(
+        path,
+        default_days,
+        main_entries,
+        pending_entries,
+        new_sites=tuple(display for display, _days in pending_entries.values()),
+    )
+
+
+def save_ctb_eta_config(
+    path: Path,
+    default_days: int,
+    confirmed_entries: Mapping[str, tuple[str, int]],
+    new_entries: Mapping[str, tuple[str, int]],
+) -> dict:
+    """Save GUI-edited CTB ETA entries and return the normalized settings."""
+    normalized_default = parse_positive_int(
+        str(default_days),
+        DEFAULT_CTB_ETA_LEAD_DAYS,
+        "CTB ETA default_lead_days",
+    )
+
+    def normalize_entries(
+        entries: Mapping[str, tuple[str, int]],
+        section_label: str,
+    ) -> dict[str, tuple[str, int]]:
+        normalized: dict[str, tuple[str, int]] = {}
+        for raw_key, (raw_display, raw_days) in entries.items():
+            display = _supplier_site_config_display(raw_display or raw_key)
+            key = _supplier_site_config_key(display)
+            if not key:
+                continue
+            days = parse_positive_int(
+                str(raw_days),
+                normalized_default,
+                f"CTB ETA {section_label} {display}",
+            )
+            normalized[key] = (display, days)
+        return normalized
+
+    normalized_confirmed = normalize_entries(confirmed_entries, CTB_ETA_SITE_SECTION)
+    normalized_new = normalize_entries(new_entries, CTB_ETA_NEW_SITE_SECTION)
+    _write_ctb_eta_config(
+        path,
+        normalized_default,
+        normalized_confirmed,
+        normalized_new,
+    )
+    return load_ctb_eta_config(path)
 
 
 def load_sheet_detection_config(root: Path) -> dict:

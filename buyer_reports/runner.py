@@ -32,6 +32,7 @@ from .common import (
     pause_for_windows_exe,
     prevent_temp_execution,
     project_root,
+    save_ctb_eta_config,
     set_log_quiet,
     setup_run_log,
     sync_ctb_eta_config,
@@ -207,7 +208,18 @@ def should_prompt_raken_dps_pp_weeks(args) -> bool:
         return False
     if args.dps is not None or args.pp is not None:
         return False
+    if getattr(args, "customer_scope", "all") == "avtc":
+        return False
     return has_excel_files(args.input_dir / "RAKEN")
+
+
+def _center_tk_window(root) -> None:
+    root.update_idletasks()
+    width = root.winfo_width()
+    height = root.winfo_height()
+    left = max((root.winfo_screenwidth() - width) // 2, 0)
+    top = max((root.winfo_screenheight() - height) // 2, 0)
+    root.geometry(f"+{left}+{top}")
 
 
 def select_raken_dps_pp_weeks(default_weeks: int) -> int | None:
@@ -267,12 +279,7 @@ def select_raken_dps_pp_weeks(default_weeks: int) -> int | None:
 
     root.protocol("WM_DELETE_WINDOW", use_default)
     root.bind("<Escape>", use_default)
-    root.update_idletasks()
-    width = root.winfo_width()
-    height = root.winfo_height()
-    left = max((root.winfo_screenwidth() - width) // 2, 0)
-    top = max((root.winfo_screenheight() - height) // 2, 0)
-    root.geometry(f"+{left}+{top}")
+    _center_tk_window(root)
     root.mainloop()
     return selected["value"]
 
@@ -312,6 +319,70 @@ def apply_raken_dps_pp_weeks_selection(args) -> None:
     args.raken_dps_pp_weeks_source = "Windows 啟動畫面選擇"
 
 
+def select_customer_scope() -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+    except Exception as exc:  # pragma: no cover - depends on Windows runtime
+        warn(f"無法開啟客戶選擇視窗，將使用全部客戶。原因：{exc}")
+        return "all"
+
+    selected = {"value": None}
+    try:
+        root = tk.Tk()
+    except Exception as exc:  # pragma: no cover - depends on Windows runtime
+        warn(f"無法開啟客戶選擇視窗，將使用全部客戶。原因：{exc}")
+        return "all"
+    root.title("Buyer Reports 客戶選擇")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+
+    frame = ttk.Frame(root, padding=20)
+    frame.grid(row=0, column=0, sticky="nsew")
+    ttk.Label(
+        frame,
+        text="請選擇本次要處理的客戶",
+        font=("Microsoft JhengHei UI", 11, "bold"),
+    ).grid(row=0, column=0, columnspan=3, sticky="w")
+    ttk.Label(
+        frame,
+        text="選擇 RAKEN 或全部執行時，接著會設定 RAKEN DPS+PP 週次。",
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 14))
+
+    def choose(value: str) -> None:
+        selected["value"] = value
+        root.destroy()
+
+    options = (("AVTC", "avtc"), ("RAKEN", "raken"), ("全部執行", "all"))
+    for col, (label, value) in enumerate(options):
+        ttk.Button(
+            frame,
+            text=label,
+            command=lambda choice=value: choose(choice),
+            width=14,
+        ).grid(row=2, column=col, padx=4, ipadx=6, ipady=6)
+
+    ttk.Label(
+        frame,
+        text="關閉視窗會取消本次執行。",
+    ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(14, 0))
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.bind("<Escape>", lambda _event: root.destroy())
+    _center_tk_window(root)
+    root.mainloop()
+    return selected["value"]
+
+
+def should_prompt_customer_scope(args) -> bool:
+    return (
+        is_frozen_app()
+        and sys.platform.startswith("win")
+        and not args.quiet
+        and args.dps is None
+        and args.pp is None
+    )
+
+
 def _ctb_task_enabled_for_context(args, context: RunContext) -> bool:
     return (
         not args.skip_ctb
@@ -349,8 +420,10 @@ def _collect_ctb_supplier_sites(args, contexts: Sequence[RunContext]) -> tuple[s
 def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
     if not new_sites:
         return
-    message = "本次偵測到新的 Supplier Site：\n\n" + "\n".join(
-        f"- {site}" for site in new_sites
+    message = (
+        "本次偵測到新的 Supplier Site：\n"
+        "\n"
+        + "\n".join(f"- {site}" for site in new_sites)
     )
     try:
         import tkinter as tk
@@ -370,6 +443,378 @@ def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
     except Exception as exc:  # pragma: no cover - depends on local desktop/display
         warn(f"無法開啟新的 Supplier Site 警告視窗，已改在終端機顯示。原因：{exc}")
         warn(message.replace("\n", "；"))
+
+
+def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except Exception as exc:  # pragma: no cover - depends on Windows runtime
+        warn(f"無法開啟 CTB ETA 設定視窗，將沿用目前設定。原因：{exc}")
+        return settings
+
+    try:
+        root = tk.Tk()
+    except Exception as exc:  # pragma: no cover - depends on Windows runtime
+        warn(f"無法建立 CTB ETA 設定視窗，將沿用目前設定。原因：{exc}")
+        return settings
+
+    entries: dict[str, dict] = {}
+    for key, (display, days) in settings["confirmed_supplier_site_entries"].items():
+        entries[key] = {
+            "display": display,
+            "days": days,
+            "section": "confirmed",
+        }
+    for key, (display, days) in settings["new_supplier_site_entries"].items():
+        if key not in entries:
+            entries[key] = {
+                "display": display,
+                "days": days,
+                "section": "new",
+            }
+
+    detected_keys = set(settings.get("detected_supplier_site_keys", ()))
+    edited_keys: set[str] = set()
+    selected_key = {"value": None}
+    result = {"value": None}
+
+    root.title("CTB ETA Supplier Site 設定")
+    root.geometry("820x620")
+    root.minsize(720, 500)
+    root.attributes("-topmost", True)
+
+    main_frame = ttk.Frame(root, padding=16)
+    main_frame.grid(row=0, column=0, sticky="nsew")
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+    main_frame.columnconfigure(0, weight=1)
+    main_frame.rowconfigure(5, weight=1)
+
+    ttk.Label(
+        main_frame,
+        text="CTB ETA Supplier Site 設定",
+        font=("Microsoft JhengHei UI", 12, "bold"),
+    ).grid(row=0, column=0, columnspan=3, sticky="w")
+    ttk.Label(
+        main_frame,
+        text="可修改已確認站點，也可設定本次新偵測站點；提前天數以日曆日計算。",
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 14))
+
+    default_days_var = tk.StringVar(value=str(settings["default_lead_days"]))
+    search_var = tk.StringVar()
+    site_var = tk.StringVar()
+    site_days_var = tk.StringVar()
+    selected_status_var = tk.StringVar(value="")
+
+    search_frame = ttk.Frame(main_frame)
+    search_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+    ttk.Label(search_frame, text="搜尋 Supplier Site：").grid(row=0, column=0, sticky="w")
+    search_entry = ttk.Entry(search_frame, textvariable=search_var, width=34)
+    search_entry.grid(row=0, column=1, padx=(6, 10), sticky="w")
+
+    default_frame = ttk.Frame(main_frame)
+    default_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+    ttk.Label(default_frame, text="預設提前天數（日）：").grid(row=0, column=0, sticky="w")
+    default_entry = ttk.Entry(default_frame, textvariable=default_days_var, width=10)
+    default_entry.grid(row=0, column=1, padx=(6, 10), sticky="w")
+
+    site_frame = ttk.Frame(main_frame)
+    site_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+    ttk.Label(site_frame, text="Supplier Site：").grid(row=0, column=0, sticky="w")
+    site_combo = ttk.Combobox(site_frame, textvariable=site_var, state="readonly", width=34)
+    site_combo.grid(row=0, column=1, padx=(6, 10), sticky="w")
+    ttk.Label(site_frame, text="提前天數（日）：").grid(row=0, column=2, sticky="w")
+    site_days_entry = ttk.Entry(site_frame, textvariable=site_days_var, width=10)
+    site_days_entry.grid(row=0, column=3, padx=(6, 10), sticky="w")
+    selected_status_label = ttk.Label(site_frame, textvariable=selected_status_var, width=18)
+    selected_status_label.grid(row=0, column=4, sticky="w")
+
+    table_frame = ttk.Frame(main_frame)
+    table_frame.grid(row=5, column=0, columnspan=3, sticky="nsew")
+    table_frame.columnconfigure(0, weight=1)
+    table_frame.rowconfigure(0, weight=1)
+    tree = ttk.Treeview(
+        table_frame,
+        columns=("site", "days"),
+        show="headings",
+        selectmode="browse",
+    )
+    tree.heading("site", text="Supplier Site")
+    tree.heading("days", text="提前天數（日）")
+    tree.column("site", width=320, anchor="w", stretch=True)
+    tree.column("days", width=130, anchor="center", stretch=False)
+    tree.grid(row=0, column=0, sticky="nsew")
+
+    status_tree = ttk.Treeview(
+        table_frame,
+        columns=("status",),
+        show="headings",
+        selectmode="none",
+    )
+    status_tree.heading("status", text="狀態")
+    status_tree.column("status", width=220, anchor="w", stretch=False)
+    status_tree.grid(row=0, column=1, sticky="nsew")
+
+    def scroll_trees(*args) -> None:
+        tree.yview(*args)
+        status_tree.yview(*args)
+
+    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=scroll_trees)
+    scrollbar.grid(row=0, column=2, sticky="ns")
+
+    def sync_status_scroll(first, last) -> None:
+        status_tree.yview_moveto(first)
+        scrollbar.set(first, last)
+
+    tree.configure(yscrollcommand=sync_status_scroll)
+    status_tree.configure(yscrollcommand=lambda *_args: None)
+
+    ttk.Label(
+        main_frame,
+        text="設定檔內但本次未偵測到的站點仍可修改；新站點會在下一次執行時移至已確認區。",
+    ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 12))
+
+    button_frame = ttk.Frame(main_frame)
+    button_frame.grid(row=7, column=0, columnspan=3, sticky="e")
+
+    row_iids: dict[str, str] = {}
+    display_to_key = {
+        entry["display"].casefold(): key for key, entry in entries.items()
+    }
+
+    def parse_days(raw_value: str, label: str) -> int | None:
+        try:
+            days = int(raw_value.strip())
+        except ValueError:
+            messagebox.showerror("輸入錯誤", f"{label} 必須是 0 或以上的整數。", parent=root)
+            return None
+        if days < 0:
+            messagebox.showerror("輸入錯誤", f"{label} 必須是 0 或以上的整數。", parent=root)
+            return None
+        return days
+
+    def status_for(key: str) -> str:
+        entry = entries[key]
+        if key in edited_keys:
+            return "已填寫（新站點）" if entry["section"] == "new" else "已設定"
+        if entry["section"] == "new":
+            return "新偵測"
+        if key not in detected_keys:
+            return "已設定（本次未偵測）"
+        return "已設定"
+
+    def status_tag_for(key: str) -> tuple[str, ...]:
+        entry = entries[key]
+        if entry["section"] == "new" and key not in edited_keys:
+            return ("new_supplier_site_status",)
+        return ()
+
+    def filtered_keys() -> list[str]:
+        query = search_var.get().strip().casefold()
+        if not query:
+            return list(entries)
+        return [
+            key
+            for key, entry in entries.items()
+            if query in entry["display"].casefold()
+        ]
+
+    def select_entry(key: str | None) -> None:
+        selected_key["value"] = key
+        if key is None:
+            site_var.set("")
+            site_days_var.set("")
+            selected_status_var.set("")
+            return
+        entry = entries[key]
+        site_var.set(entry["display"])
+        site_days_var.set(str(entry["days"]))
+        selected_status_var.set(status_for(key))
+
+    def refresh_tree() -> None:
+        current_key = selected_key["value"]
+        visible_keys = filtered_keys()
+        for widget in (tree, status_tree):
+            for item_id in widget.get_children():
+                widget.delete(item_id)
+        row_iids.clear()
+        for index, key in enumerate(visible_keys):
+            entry = entries[key]
+            item_id = f"site_{index}"
+            row_iids[item_id] = key
+            tree.insert(
+                "",
+                "end",
+                iid=item_id,
+                values=(entry["display"], entry["days"]),
+            )
+            status_tree.insert(
+                "",
+                "end",
+                iid=item_id,
+                values=(status_for(key),),
+                tags=status_tag_for(key),
+            )
+        site_combo["values"] = tuple(entries[key]["display"] for key in visible_keys)
+        if current_key not in visible_keys:
+            current_key = visible_keys[0] if visible_keys else None
+        if current_key is not None:
+            select_entry(current_key)
+            item_id = next(item for item, key in row_iids.items() if key == current_key)
+            tree.selection_set(item_id)
+            tree.focus(item_id)
+        else:
+            select_entry(None)
+        tree.yview_moveto(0)
+        status_tree.yview_moveto(0)
+
+    def on_tree_select(_event=None) -> None:
+        selection = tree.selection()
+        if selection and selection[0] in row_iids:
+            select_entry(row_iids[selection[0]])
+
+    def on_combo_select(_event=None) -> None:
+        key = display_to_key.get(site_var.get().casefold())
+        if key is None:
+            return
+        select_entry(key)
+        item_id = next(
+            (item for item, entry_key in row_iids.items() if entry_key == key),
+            None,
+        )
+        if item_id is not None:
+            tree.selection_set(item_id)
+            tree.focus(item_id)
+
+    def on_status_click(event) -> str:
+        item_id = status_tree.identify_row(event.y)
+        if item_id in row_iids:
+            tree.selection_set(item_id)
+            tree.focus(item_id)
+            select_entry(row_iids[item_id])
+        return "break"
+
+    def on_tree_mousewheel(event) -> str:
+        delta = getattr(event, "delta", 0)
+        if delta:
+            amount = -1 if delta > 0 else 1
+        else:
+            amount = -1 if getattr(event, "num", 5) == 4 else 1
+        tree.yview_scroll(amount, "units")
+        return "break"
+
+    def apply_site() -> None:
+        key = selected_key["value"]
+        if key is None:
+            return
+        days = parse_days(site_days_var.get(), "Supplier Site 提前天數")
+        if days is None:
+            return
+        entries[key]["days"] = days
+        edited_keys.add(key)
+        refresh_tree()
+        selected_status_var.set(status_for(key))
+
+    def apply_default_to_all() -> None:
+        default_days = parse_days(default_days_var.get(), "預設提前天數")
+        if default_days is None:
+            return
+        if not entries:
+            return
+        if not messagebox.askyesno(
+            "確認套用預設值",
+            f"確定要將全部 {len(entries)} 個 Supplier Site 的提前天數設為 "
+            f"{default_days} 天嗎？",
+            parent=root,
+        ):
+            return
+        for key, entry in entries.items():
+            entry["days"] = default_days
+            edited_keys.add(key)
+        refresh_tree()
+        if selected_key["value"] is not None:
+            selected_status_var.set(status_for(selected_key["value"]))
+
+    def confirm() -> None:
+        default_days = parse_days(default_days_var.get(), "預設提前天數")
+        if default_days is None:
+            return
+        confirmed_entries = {
+            key: (entry["display"], entry["days"])
+            for key, entry in entries.items()
+            if entry["section"] == "confirmed"
+        }
+        new_entries = {
+            key: (entry["display"], entry["days"])
+            for key, entry in entries.items()
+            if entry["section"] == "new"
+        }
+        try:
+            saved = save_ctb_eta_config(
+                settings["path"],
+                default_days,
+                confirmed_entries,
+                new_entries,
+            )
+        except Exception as exc:  # pragma: no cover - depends on filesystem permissions
+            messagebox.showerror("設定檔錯誤", f"無法儲存 CTB ETA 設定：{exc}", parent=root)
+            return
+        result["value"] = saved
+        root.destroy()
+
+    def cancel() -> None:
+        root.destroy()
+
+    def clear_search() -> None:
+        search_var.set("")
+        search_entry.focus_set()
+
+    search_var.trace_add("write", lambda *_args: refresh_tree())
+    site_combo.bind("<<ComboboxSelected>>", on_combo_select)
+    tree.bind("<<TreeviewSelect>>", on_tree_select)
+    status_tree.bind("<Button-1>", on_status_click)
+    for widget in (tree, status_tree):
+        widget.bind("<MouseWheel>", on_tree_mousewheel)
+        widget.bind("<Button-4>", on_tree_mousewheel)
+        widget.bind("<Button-5>", on_tree_mousewheel)
+    status_tree.tag_configure(
+        "new_supplier_site_status",
+        background="#f4cccc",
+        foreground="#9c0006",
+    )
+    ttk.Button(search_frame, text="清除", command=clear_search).grid(
+        row=0,
+        column=2,
+    )
+    ttk.Button(
+        default_frame,
+        text="全部套用預設值",
+        command=apply_default_to_all,
+    ).grid(row=0, column=2, padx=(0, 10))
+    ttk.Button(site_frame, text="套用此站點", command=apply_site).grid(
+        row=1,
+        column=0,
+        columnspan=5,
+        sticky="e",
+        pady=(6, 0),
+    )
+    ttk.Button(button_frame, text="取消執行", command=cancel).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(button_frame, text="確定並開始執行", command=confirm).grid(row=0, column=1)
+
+    refresh_tree()
+    if entries:
+        select_entry(next(iter(entries)))
+    else:
+        site_combo.configure(state="disabled")
+        site_days_entry.configure(state="disabled")
+        selected_status_label.configure(text="沒有 Supplier Site")
+    root.protocol("WM_DELETE_WINDOW", cancel)
+    root.bind("<Escape>", lambda _event: cancel())
+    root.grab_set()
+    _center_tk_window(root)
+    root.mainloop()
+    return result["value"]
 
 
 def _edit_ctb_eta_config(path: Path) -> None:
@@ -404,10 +849,7 @@ def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
     args.ctb_eta_config_path = default_path
     args.ctb_eta_default_lead_days = DEFAULT_CTB_ETA_LEAD_DAYS
     args.ctb_eta_lead_days_by_supplier_site = {}
-
-    # Windows exe 目前維持既有流程；命令列模式先使用這份可編輯設定。
-    if is_frozen_app():
-        return
+    args.startup_cancelled = False
 
     ctb_contexts = [
         context
@@ -431,11 +873,22 @@ def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
             + "、".join(settings["promoted_supplier_sites"])
         )
     if settings["new_supplier_sites"]:
-        log("＝" * 72)
+        log()
         log("CTB ETA 新 Supplier Site（目前先使用預設天數）：")
         for site in settings["new_supplier_sites"]:
             log(f"  - {site}")
-        log("＝" * 72)
+        log()
+
+    if should_prompt_customer_scope(args):
+        _show_ctb_new_supplier_site_warning(settings["new_supplier_sites"])
+        edited_settings = _show_ctb_eta_settings_dialog(settings)
+        if edited_settings is None:
+            args.startup_cancelled = True
+            log("使用者取消 CTB ETA 設定，本次執行已取消。")
+            return
+        _apply_ctb_eta_settings(args, edited_settings)
+        log("CTB ETA 設定已由啟動畫面確認，當次 CTB 將使用畫面上的天數。")
+        return
 
     if args.quiet or not sys.stdin.isatty():
         return
@@ -478,6 +931,12 @@ def build_run_contexts(args) -> list[RunContext]:
 
     contexts = []
     for customer in args.customers:
+        customer_scope = getattr(args, "customer_scope", "all")
+        if (
+            customer_scope != "all"
+            and customer["name"].casefold() != customer_scope.casefold()
+        ):
+            continue
         customer_dir = args.input_dir / customer["name"]
         if not has_excel_files(customer_dir):
             continue
@@ -1201,6 +1660,8 @@ def run_reports(args) -> bool:
         log(f"  {context.label}：{context.input_dir} → {context.out_dir}")
 
     prepare_ctb_eta_settings(args, contexts)
+    if getattr(args, "startup_cancelled", False):
+        return True
 
     tasks = []
     for context in contexts:
@@ -1272,6 +1733,13 @@ def main() -> int:
         args.dps_part_number_headers = sheet_config["dps_part_number_headers"]
         args.pp_part_number_field_keywords = sheet_config["pp_part_number_field_keywords"]
         args.customers = sheet_config["customers"]
+        args.customer_scope = "all"
+        if should_prompt_customer_scope(args):
+            selected_scope = select_customer_scope()
+            if selected_scope is None:
+                print("使用者取消本次執行。", flush=True)
+                return 0
+            args.customer_scope = selected_scope
         apply_raken_dps_pp_weeks_selection(args)
         ok = run_reports(args)
         return 0 if ok else 1

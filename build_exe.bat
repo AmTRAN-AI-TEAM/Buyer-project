@@ -43,6 +43,7 @@ if exist release\BuyerReports rmdir /s /q release\BuyerReports
   --console ^
   --hidden-import tkinter ^
   --hidden-import tkinter.ttk ^
+  --hidden-import tkinter.messagebox ^
   --name BuyerReports ^
   --distpath release ^
   --workpath build ^
@@ -63,6 +64,7 @@ if not exist release\BuyerReports\output\AVTC mkdir release\BuyerReports\output\
 if not exist release\BuyerReports\output\RAKEN mkdir release\BuyerReports\output\RAKEN
 copy /Y "Windows執行檔(exe)使用說明.txt" "release\BuyerReports\Windows執行檔(exe)使用說明.txt" >nul
 copy /Y "buyer_reports.ini" "release\BuyerReports\buyer_reports.ini" >nul
+if exist "ctb_eta_days.ini" copy /Y "ctb_eta_days.ini" "release\BuyerReports\ctb_eta_days.ini" >nul
 
 echo.
 echo Done.
