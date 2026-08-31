@@ -214,7 +214,8 @@ RAKEN 週次（適用時）與 ETA 設定視窗；已確認區與新偵測區都
 後才會產出報表。下一次執行時，上一輪的 `[supplier_site_new]` 會自動移到
 `[supplier_site]` 上方區域，並保留你修改過的天數。
 
-Windows ETA 設定視窗提供 Supplier site 關鍵字搜尋，輸入部分文字即可篩選符合項目，清除後恢復全部 Supplier site。
+Windows ETA 設定視窗提供 Supplier site 搜尋：直接輸入文字會篩選包含該文字的項目；輸入兩個連續星號 `**` 可代表中間任意長度的文字，
+例如 `CN**SIO` 可找到 `CNF22556V-WIESIO`。單一星號 `*` 會視為 Supplier site 的一般文字，清除後恢復全部 Supplier site。
 表格中的提前天數可用雙擊直接編輯，按 Enter 後會要求確認；清單支援 Ctrl 多選、Shift 連續選取與 Ctrl+A，
 可在「將選取的 Supplier site 設定提前天數」列批次套用。各欄位表頭右側的 ↑/↓ 按鈕可依 Supplier site、提前天數或狀態進行順序／倒序排列，
 預設會將尚未設定的新 Supplier site 排在最前面。「全部套用預設值」按下後會先要求確認，確認後才將所有 Supplier site
@@ -251,7 +252,7 @@ BuyerReports/
 若 DPS 與 PP 來源都可用，也會產出 `DPS+PP.xlsx`。
 若該客戶資料夾內另有 `BOM1`、`open po`、`over shortage` 工作表，也會產出 `CTB.xlsx`。
 接著若選定客戶有 CTB 來源，會顯示 CTB ETA Supplier site 設定視窗。已確認 Supplier site
-與新偵測 Supplier site 都可以選取並修改提前天數；可在搜尋欄輸入部分關鍵字篩選 Supplier site。
+與新偵測 Supplier site 都可以選取並修改提前天數；可在搜尋欄輸入部分關鍵字或使用 `**` 萬用字元篩選 Supplier site。
 「全部套用預設值」會先要求確認，確認後才將目前清單全部設為預設值，預設為 15 天。
 尚未完成設定的新偵測 Supplier site 會只在狀態欄以紅底標示，完成套用後恢復一般底色。按「確定並開始執行」後才會繼續產出。
 exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用；

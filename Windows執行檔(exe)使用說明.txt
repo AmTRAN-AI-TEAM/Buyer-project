@@ -89,7 +89,8 @@ BuyerReports/
    選擇 RAKEN 或「全部執行」時，若 input/RAKEN 內有 Excel，會出現 RAKEN DPS+PP 週數選擇視窗；請選擇 2 週、3 週或 4 週，此選項只影響 output/RAKEN/DPS+PP.xlsx。
    若選定客戶有 CTB 來源，接著會出現 CTB ETA Supplier site 設定視窗。
    已確認區與新偵測區的 Supplier site 都可以直接修改提前天數；雙擊數字後修改，按 Enter 會出現確認視窗。
-   可在搜尋欄輸入部分關鍵字快速篩選 Supplier site，例如輸入 OL 可找到包含 OL 的項目。
+   可在搜尋欄輸入部分關鍵字快速篩選 Supplier site，例如輸入 OL 可找到包含 OL 的項目；輸入兩個連續星號 `**` 可代表任意長度的文字，例如輸入 CN**SIO 可找到 CNF22556V-WIESIO。
+   單一星號 `*` 會視為 Supplier site 的一般文字。
    清單支援 Ctrl 多選、Shift 連續選取及 Ctrl+A 全選；輸入選取 Supplier site 的提前天數後，可按「套用選取項目」。
    「全部套用預設值」按下後會先出現確認視窗；確認後才會將清單內所有 Supplier site 套用目前預設值，預設為 15 天。
    尚未完成設定的新偵測 Supplier site 只會在狀態欄以紅底標示，完成套用後恢復一般底色。

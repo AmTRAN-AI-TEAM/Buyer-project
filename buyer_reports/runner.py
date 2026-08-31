@@ -445,6 +445,21 @@ def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
         warn(message.replace("\n", "；"))
 
 
+def _supplier_site_matches_query(site: str, query: str) -> bool:
+    """Match a Supplier site using literal search or the custom ``**`` wildcard."""
+    query = query.strip().casefold()
+    if not query:
+        return True
+
+    site = site.casefold()
+    if "**" not in query:
+        return query in site
+
+    # Only a pair of stars is special; single stars remain literal site text.
+    pattern = ".*".join(re.escape(part) for part in query.split("**"))
+    return re.fullmatch(pattern, site, flags=re.DOTALL) is not None
+
+
 def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
     try:
         import tkinter as tk
@@ -616,11 +631,11 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
         return 3
 
     def filtered_keys() -> list[str]:
-        query = search_var.get().strip().casefold()
+        query = search_var.get().strip()
         visible = [
             key
             for key, entry in entries.items()
-            if not query or query in entry["display"].casefold()
+            if _supplier_site_matches_query(entry["display"], query)
         ]
         if sort_state["column"] == "site":
             key_func = lambda key: (entries[key]["display"].casefold(),)
