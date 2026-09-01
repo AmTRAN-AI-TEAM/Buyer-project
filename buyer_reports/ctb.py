@@ -312,6 +312,31 @@ def _find_col(headers: dict[str, int], aliases: Sequence[str]) -> int | None:
     return None
 
 
+def _find_col_from_aliases(headers: dict[str, int], aliases: Sequence[str]) -> int | None:
+    """Use the first available alias, preferring the canonical spelling."""
+    normalized_aliases = [normalize_label(alias) for alias in aliases]
+    for alias in normalized_aliases:
+        if alias in headers:
+            return headers[alias]
+    for alias in normalized_aliases:
+        for key, column in headers.items():
+            if alias in key:
+                return column
+    return None
+
+
+def _find_header_row_with_aliases(
+    ws,
+    alias_groups: Sequence[Sequence[str]],
+    max_row: int = 20,
+) -> int | None:
+    for row_idx in range(1, min(ws.max_row, max_row) + 1):
+        headers = _header_cols(ws, row_idx)
+        if all(_find_col_from_aliases(headers, aliases) is not None for aliases in alias_groups):
+            return row_idx
+    return None
+
+
 def _find_over_shortage_col(headers: dict[str, int]) -> int | None:
     return _find_col(headers, ["OVER SHORTAGE", "Over Shortage", "OVER_SHORTAGE"])
 
@@ -458,18 +483,31 @@ def read_open_po(open_po_path: Path) -> list[OpenPoRecord]:
         if sheet_name is None:
             raise SystemExit(f"{open_po_path.name} 內找不到 {CTB_OPEN_PO_SHEET} 工作表")
         ws = wb[sheet_name]
-        header_row = _find_header_row(ws, ["Item", "Quantity Due"], max_row=10)
+        header_row = _find_header_row_with_aliases(
+            ws,
+            (
+                ("Item", "Part No.", "Part No"),
+                ("Quantity Due", "Qty UnRCV"),
+            ),
+            max_row=10,
+        )
         if header_row is None:
-            raise SystemExit(f"{open_po_path.name} 的 open po 找不到 Item / Quantity Due 表頭")
+            raise SystemExit(
+                f"{open_po_path.name} 的 open po 找不到 Item / Part No. 與 "
+                "Quantity Due / Qty UnRCV 表頭"
+            )
         headers = _header_cols(ws, header_row)
         key_col = _find_col(headers, ["料号+厂商", "料號+廠商", "part supplier key"])
-        item_col = _find_col(headers, ["Item"])
-        quantity_col = _find_col(headers, ["Quantity Due"])
+        item_col = _find_col_from_aliases(headers, ["Item", "Part No.", "Part No"])
+        quantity_col = _find_col_from_aliases(headers, ["Quantity Due", "Qty UnRCV"])
         supplier_col = _find_col(headers, ["Supplier"])
-        supplier_site_col = _find_col(headers, ["Supplier Site"])
+        supplier_site_col = _find_col_from_aliases(headers, ["Supplier Site", "Trading Vendor"])
         need_by_col = _find_col(headers, ["Need By Date"])
         if item_col is None or quantity_col is None:
-            raise SystemExit(f"{open_po_path.name} 的 open po 缺少 Item 或 Quantity Due 欄")
+            raise SystemExit(
+                f"{open_po_path.name} 的 open po 缺少 Item / Part No. 或 "
+                "Quantity Due / Qty UnRCV 欄"
+            )
 
         records = []
         for row_idx in range(header_row + 1, ws.max_row + 1):

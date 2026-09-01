@@ -46,7 +46,8 @@
 1. 每個客戶資料夾若同時有 CTB 所需來源 sheet，且本次 `DPS+PP.xlsx` 成功產出，會額外產出 `CTB.xlsx`。
 2. `BOM1` 用來把 `DPS+PP` 的成品需求依 `USE` 展開成子件需求。
 3. `over shortage` 用來取得 shortage 起始值；來源 sheet 必須有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage` 欄，程式會直接使用該欄作為 CTB 的 `OVER SHORTAGE` / balance 起始值。
-4. `open po` 用 `Item + Supplier Site` 產生 key，對應 `Quantity Due` 與 `Need By Date`，產出 ETA / PO Remain 列。
+4. `open po` 用 `Item` 或 `Part No.` 與 `Supplier Site` 或 `Trading Vendor` 對應料號與 Supplier site，
+   讀取 `Quantity Due` 或 `Qty UnRCV`、`Need By Date`，產出 ETA / PO Remain 列。
 5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
 6. ETA 會逐筆模擬 Balance，將每筆 `Quantity Due` 放到加入前第一個負值期間依 Supplier Site 設定的天數往前推算所對應的期間；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 `Need By Date`。若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
 7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
@@ -357,7 +358,7 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | DPS+PP | 必須先在本次執行成功產出 `output/<客戶>/DPS+PP.xlsx` |
 | CTB 來源完整性 | 若完全沒有 CTB 來源 sheet，程式不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因 |
 | BOM1 | 來源檔需有 `BOM1` sheet，且表頭需有 `Child P/N`、`USE`；程式用 Child P/N 前一欄作為成品料號欄 |
-| open po | 來源檔需有 `open po` sheet，且表頭需有 `Item`、`Quantity Due`；若有 `料号+厂商`、`Supplier Site`、`Need By Date` 會一併使用 |
+| open po | 來源檔需有 `open po` sheet，且表頭需有 `Item` 或 `Part No.`、`Quantity Due` 或 `Qty UnRCV`；`料号+厂商`、`Supplier Site` 或 `Trading Vendor`、`Need By Date` 會一併使用 |
 | over shortage | 來源檔需有 `over shortage` sheet，且表頭需有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage`；程式會直接用 `OVER SHORTAGE` 作為 balance 起始值，並將 `Po Remain`、`HLD`、`BOR MM`、`Overshortage1` 等存在的欄位寫入輔助頁供追溯 |
 | 原始 CTB | 可選。若來源檔有 `CTB` sheet，輸出會套用它的表頭、日期欄、列順序與格式；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
 | Demand | `DPS+PP` 成品需求 × `BOM1` USE，依子件料號彙總 |

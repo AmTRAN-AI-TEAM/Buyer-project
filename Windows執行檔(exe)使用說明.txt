@@ -37,7 +37,8 @@ CTB：
 1. 同一個客戶資料夾內若有 BOM1、open po、over shortage 工作表，且本次 DPS+PP.xlsx 成功產出，會額外產出 CTB.xlsx。
 2. BOM1 用來將 DPS+PP 的成品需求依 USE 展開成子件需求。
 3. over shortage 用來取得 shortage 起始值；來源 sheet 必須有 Part No 與 OVER SHORTAGE / Over Shortage 欄，程式會直接使用該欄作為 CTB 的 OVER SHORTAGE / balance 起始值。
-4. open po 用 Item + Supplier Site 產生 key，對應 Quantity Due 與 Need By Date，產出 ETA / PO Remain 列。
+4. open po 可用 Item 或 Part No. 搭配 Supplier Site 或 Trading Vendor 對應料號與 Supplier site，
+   並讀取 Quantity Due 或 Qty UnRCV、Need By Date，產出 ETA / PO Remain 列。
 5. CTB 的 D 欄 key 由 C 欄 Part No + E 欄 Code 組成；E 欄 Code 來自 open po 的 Supplier Site。
 6. ETA 會逐筆模擬 Balance，依 Supplier Site 設定的提前天數將 Quantity Due 放到第一個負值期間之前；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 Need By Date。
 7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
@@ -183,7 +184,8 @@ CTB ETA Supplier site 設定：
 
 1. 找不到 DPS、PP 或 CTB 來源檔
    請確認檔案已放在 input/AVTC 或 input/RAKEN，且 DPS 檔名包含 DPS、PP 檔名包含 PP。
-   若要產 CTB，該客戶資料夾需另外有 BOM1、open po、over shortage 工作表。
+   若要產 CTB，該客戶資料夾需另外有 BOM1、open po、over shortage 工作表；open po 可使用 Item / Quantity Due / Supplier Site，
+   或對應的 Part No. / Qty UnRCV / Trading Vendor 欄位名稱。
    若完全沒有 CTB 來源 sheet，工具只會產出 DPS、PP、DPS+PP，不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因。
 
 2. Windows 顯示「無法訪問指定設備、路徑或文件」
