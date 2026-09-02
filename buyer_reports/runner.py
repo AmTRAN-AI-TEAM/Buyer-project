@@ -1663,6 +1663,7 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
                 "ok": True,
                 "source": (info["dps_sources"], pp_path),
                 "output": out_path,
+                "dps_cutoff_end": info["dps_cutoff_range"][1],
             }
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一 PP 壞檔可嘗試下一個
             last_error = exc
@@ -1682,7 +1683,13 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
     }
 
 
-def run_ctb_report(args, context: RunContext, progress: Progress | None = None) -> dict:
+def run_ctb_report(
+    args,
+    context: RunContext,
+    progress: Progress | None = None,
+    *,
+    dps_cutoff_end: dt.date | None = None,
+) -> dict:
     out_path = context.out_dir / CTB_OUTPUT_NAME
     dps_pp_path = context.out_dir / DPS_PP_OUTPUT_NAME
     title = f"{context.label} CTB" if context.name else "CTB"
@@ -1693,6 +1700,11 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
     try:
         if not dps_pp_path.is_file():
             raise SystemExit(f"找不到 {dps_pp_path}，請先成功產出 DPS+PP.xlsx")
+        if dps_cutoff_end is None:
+            raise SystemExit(
+                "CTB 找不到本次 DPS+PP 的 cutoff 日期，"
+                "為避免套用錯誤 Balance 規則已停止產出"
+            )
         bom_path = find_workbook_with_sheet(context.input_dir, "BOM1", f"{title} BOM1")
         open_po_path = find_workbook_with_sheet(context.input_dir, "open po", f"{title} open po")
         over_shortage_path = find_workbook_with_sheet(
@@ -1710,6 +1722,7 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
             over_shortage_path=over_shortage_path,
             output_path=out_path,
             template_path=template_path,
+            dps_cutoff_end=dps_cutoff_end,
             default_eta_lead_days=args.ctb_eta_default_lead_days,
             eta_lead_days_by_supplier_site=args.ctb_eta_lead_days_by_supplier_site,
         )
@@ -1718,6 +1731,7 @@ def run_ctb_report(args, context: RunContext, progress: Progress | None = None) 
         log(f"  BOM1 來源       ：{info['bom_source'].name}")
         log(f"  open po 來源    ：{info['open_po_source'].name}")
         log(f"  over shortage 來源：{info['over_shortage_source'].name}")
+        log(f"  Balance 初始需求：只加總至 DPS cutoff {dps_cutoff_end}")
         if info.get("template_source") is not None:
             log(f"  CTB 版型來源    ：{info['template_source'].name}（只沿用列結構與格式，數值重算）")
         else:
@@ -1836,6 +1850,7 @@ def run_reports(args) -> bool:
 
     results = []
     success_by_context_kind = {}
+    dps_pp_cutoff_by_context: dict[str, dt.date] = {}
     with Progress(total=len(tasks) * 2) as progress:
         for context, _name, runner in tasks:
             if runner is run_ctb_report and not success_by_context_kind.get((context.name, "DPS+PP")):
@@ -1850,10 +1865,23 @@ def run_reports(args) -> bool:
                     "output": context.out_dir / CTB_OUTPUT_NAME,
                     "stale_output": (context.out_dir / CTB_OUTPUT_NAME).exists(),
                 }
+            elif runner is run_ctb_report:
+                result = runner(
+                    args,
+                    context,
+                    progress,
+                    dps_cutoff_end=dps_pp_cutoff_by_context.get(context.name),
+                )
             else:
                 result = runner(args, context, progress)
             results.append(result)
             success_by_context_kind[(context.name, result["kind"])] = result["ok"]
+            if (
+                result["kind"] == "DPS+PP"
+                and result["ok"]
+                and result.get("dps_cutoff_end") is not None
+            ):
+                dps_pp_cutoff_by_context[context.name] = result["dps_cutoff_end"]
 
     log("\n--- 執行摘要 ---")
     for result in results:

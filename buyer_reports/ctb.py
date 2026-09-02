@@ -1102,6 +1102,7 @@ def write_ctb_sheet(
     periods: Sequence[Period],
     parts: Sequence[CtbPart],
     *,
+    dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int = ETA_LEAD_DAYS,
     eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict:
@@ -1113,6 +1114,10 @@ def write_ctb_sheet(
     summary_demand_col = last_period_col + 1
     summary_po_col = last_period_col + 2
     period_columns = [(start_col + idx, period) for idx, period in enumerate(periods)]
+    balance_initial_sum_cols = _initial_sum_cols_for_cutoff(
+        period_columns,
+        dps_cutoff_end,
+    )
     po_remain_period_idx = _last_by_day_period_index(period_columns)
 
     fills = {
@@ -1137,6 +1142,7 @@ def write_ctb_sheet(
             part.open_po,
             demand=part.demand,
             over_shortage=part.shortage.over_shortage if part.shortage else 0.0,
+            initial_sum_cols=balance_initial_sum_cols,
             period_start_col=start_col,
             default_lead_days=default_eta_lead_days,
             lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
@@ -1184,6 +1190,7 @@ def write_ctb_sheet(
             eta_row_indices,
             [other_row],
             period_columns,
+            balance_initial_sum_cols,
         )
         balance_row_indices.append(balance_row)
         balance_rows += 1
@@ -1468,6 +1475,34 @@ def _last_by_day_period_index(period_columns: Sequence[tuple[int, Period]]) -> i
     return last_idx
 
 
+def _initial_sum_cols_for_cutoff(
+    period_columns: Sequence[tuple[int, Period]],
+    cutoff_end: dt.date | None,
+) -> tuple[int, int] | None:
+    """Return the absolute columns used to seed Balance through the DPS cutoff."""
+    if cutoff_end is None or not period_columns:
+        return None
+
+    cutoff_idx = next(
+        (
+            idx
+            for idx, (_col, period) in enumerate(period_columns)
+            if period.start == cutoff_end
+        ),
+        None,
+    )
+    if cutoff_idx is None:
+        raise SystemExit(
+            f"CTB 找不到 DPS cutoff 日期 {cutoff_end.isoformat()} 對應的期間欄位"
+        )
+
+    first_sum_idx = 1
+    if cutoff_idx < first_sum_idx:
+        first_col = period_columns[0][0]
+        return first_col, first_col - 1
+    return period_columns[first_sum_idx][0], period_columns[cutoff_idx][0]
+
+
 def _process_template_group(
     ws,
     formula_ws,
@@ -1479,6 +1514,7 @@ def _process_template_group(
     shortage_records: dict[str, ShortageRecord],
     open_po_by_key: dict[str, list[OpenPoRecord]],
     *,
+    balance_initial_sum_cols: tuple[int, int] | None = None,
     default_eta_lead_days: int = ETA_LEAD_DAYS,
     eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict[str, int]:
@@ -1496,13 +1532,14 @@ def _process_template_group(
     eta_row_indices: list[int] = []
     other_row_indices: list[int] = []
 
-    initial_sum_cols = None
-    for row_idx in group_rows:
-        if _is_balance_row_type(_ctb_row_type(ws, row_idx)):
-            initial_sum_cols = _formula_sum_col_range(
-                formula_ws.cell(row_idx, period_columns[0][0]).value
-            )
-            break
+    initial_sum_cols = balance_initial_sum_cols
+    if initial_sum_cols is None:
+        for row_idx in group_rows:
+            if _is_balance_row_type(_ctb_row_type(ws, row_idx)):
+                initial_sum_cols = _formula_sum_col_range(
+                    formula_ws.cell(row_idx, period_columns[0][0]).value
+                )
+                break
 
     eta_records: list[OpenPoRecord] = []
     eta_keys: dict[int, str] = {}
@@ -1612,6 +1649,7 @@ def write_ctb_from_template(
     shortage_records: dict[str, ShortageRecord],
     open_po_records: Sequence[OpenPoRecord],
     *,
+    dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int = ETA_LEAD_DAYS,
     eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict:
@@ -1630,6 +1668,10 @@ def write_ctb_from_template(
         period_columns = _template_period_columns(ws)
         if not period_columns:
             raise SystemExit(f"{template_path.name} 的 CTB 找不到日期期間欄")
+        balance_initial_sum_cols = _initial_sum_cols_for_cutoff(
+            period_columns,
+            dps_cutoff_end,
+        )
         summary_columns = _template_summary_columns(ws, period_columns[-1][0])
         open_po_by_key: dict[str, list[OpenPoRecord]] = defaultdict(list)
         for record in open_po_records:
@@ -1661,6 +1703,7 @@ def write_ctb_from_template(
                 parts_by_part,
                 shortage_records,
                 open_po_by_key,
+                balance_initial_sum_cols=balance_initial_sum_cols,
                 default_eta_lead_days=default_eta_lead_days,
                 eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
             )
@@ -1700,6 +1743,7 @@ def generate_ctb(
     output_path: Path,
     template_path: Path | None = None,
     *,
+    dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int = ETA_LEAD_DAYS,
     eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
 ) -> dict:
@@ -1719,6 +1763,7 @@ def generate_ctb(
             parts_by_part,
             shortage,
             open_po,
+            dps_cutoff_end=dps_cutoff_end,
             default_eta_lead_days=default_eta_lead_days,
             eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
         )
@@ -1729,6 +1774,7 @@ def generate_ctb(
                 wb,
                 periods,
                 parts,
+                dps_cutoff_end=dps_cutoff_end,
                 default_eta_lead_days=default_eta_lead_days,
                 eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
             ),
