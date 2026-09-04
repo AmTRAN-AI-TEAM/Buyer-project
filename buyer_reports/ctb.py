@@ -545,7 +545,7 @@ def read_open_po(open_po_path: Path) -> list[OpenPoRecord]:
         key_col = _find_col(headers, ["料号+厂商", "料號+廠商", "part supplier key"])
         item_col = _find_col_from_aliases(headers, ["Item", "Part No.", "Part No"])
         quantity_col = _find_col_from_aliases(headers, ["Quantity Due", "Qty UnRCV"])
-        supplier_col = _find_col(headers, ["Supplier"])
+        supplier_col = _find_col_from_aliases(headers, ["Supplier", "Shipping Site Code"])
         supplier_site_col = _find_col_from_aliases(headers, ["Supplier Site", "Trading Vendor"])
         need_by_col = _find_col(headers, ["Need By Date"])
         if item_col is None or quantity_col is None:

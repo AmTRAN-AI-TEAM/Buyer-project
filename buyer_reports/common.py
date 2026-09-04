@@ -10,8 +10,9 @@ import re
 import sys
 import tempfile
 from copy import copy
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from openpyxl.utils import get_column_letter
 
@@ -26,6 +27,8 @@ CTB_ETA_CONFIG_FILE_NAME = "ctb_eta_days.ini"
 CTB_ETA_CONFIG_SECTION = "ctb_eta"
 CTB_ETA_SITE_SECTION = "supplier_site"
 CTB_ETA_NEW_SITE_SECTION = "supplier_site_new"
+CTB_ETA_SUPPLIER_SECTION = "supplier_by_site"
+CTB_ETA_NOTE_SECTION = "note_by_site"
 DEFAULT_CTB_ETA_LEAD_DAYS = 15
 DEFAULT_DPS_SHEET_KEYWORDS = ("DPS",)
 DEFAULT_PP_SHEET_KEYWORDS = ("PP", "Data")
@@ -52,6 +55,14 @@ DEFAULT_CUSTOMER_MODES = {
 }
 VALID_REPORT_MODES = ("first_valid", "merge_all")
 VALID_DPS_PP_LATE_DPS_MODES = ("merge_to_cutoff", "drop")
+
+
+@dataclass(frozen=True)
+class CtbEtaConfigEntry:
+    display: str
+    days: int
+    supplier: str = ""
+    note: str = ""
 
 # ---------------------------------------------------------------------------
 # 共用小工具
@@ -205,8 +216,8 @@ def _read_ctb_eta_site_section(
     parser: configparser.ConfigParser,
     section: str,
     default_days: int,
-) -> tuple[dict[str, tuple[str, int]], bool]:
-    entries: dict[str, tuple[str, int]] = {}
+) -> tuple[dict[str, CtbEtaConfigEntry], bool]:
+    entries: dict[str, CtbEtaConfigEntry] = {}
     had_invalid_value = False
     if not parser.has_section(section):
         return entries, had_invalid_value
@@ -224,16 +235,48 @@ def _read_ctb_eta_site_section(
         )
         if str(raw_days).strip() != str(days):
             had_invalid_value = True
-        entries[key] = (site, days)
+        entries[key] = CtbEtaConfigEntry(site, days)
     return entries, had_invalid_value
+
+
+def _read_ctb_eta_text_section(
+    parser: configparser.ConfigParser,
+    section: str,
+) -> tuple[dict[str, str], bool]:
+    values: dict[str, str] = {}
+    had_invalid_value = False
+    if not parser.has_section(section):
+        return values, had_invalid_value
+    for raw_site, raw_text in parser.items(section):
+        site = _supplier_site_config_display(raw_site)
+        key = _supplier_site_config_key(site)
+        if not key:
+            had_invalid_value = True
+            warn(f"CTB ETA {section} 設定忽略空白 Supplier site。")
+            continue
+        values[key] = _supplier_site_config_display(raw_text)
+    return values, had_invalid_value
+
+
+def _apply_ctb_eta_text_metadata(
+    entries: dict[str, CtbEtaConfigEntry],
+    suppliers: Mapping[str, str],
+    notes: Mapping[str, str],
+) -> None:
+    for key, entry in list(entries.items()):
+        entries[key] = replace(
+            entry,
+            supplier=suppliers.get(key, entry.supplier),
+            note=notes.get(key, entry.note),
+        )
 
 
 def _read_ctb_eta_config_file(
     path: Path,
-) -> tuple[int, dict[str, tuple[str, int]], dict[str, tuple[str, int]], bool]:
+) -> tuple[int, dict[str, CtbEtaConfigEntry], dict[str, CtbEtaConfigEntry], bool]:
     default_days = DEFAULT_CTB_ETA_LEAD_DAYS
-    main_entries: dict[str, tuple[str, int]] = {}
-    new_entries: dict[str, tuple[str, int]] = {}
+    main_entries: dict[str, CtbEtaConfigEntry] = {}
+    new_entries: dict[str, CtbEtaConfigEntry] = {}
     needs_normalization = not path.is_file()
     if not path.is_file():
         return default_days, main_entries, new_entries, needs_normalization
@@ -259,6 +302,10 @@ def _read_ctb_eta_config_file(
     )
     if raw_default is None or str(raw_default).strip() != str(default_days):
         needs_normalization = True
+    if not parser.has_section(CTB_ETA_SUPPLIER_SECTION):
+        needs_normalization = True
+    if not parser.has_section(CTB_ETA_NOTE_SECTION):
+        needs_normalization = True
 
     main_entries, main_invalid = _read_ctb_eta_site_section(
         parser,
@@ -270,16 +317,49 @@ def _read_ctb_eta_config_file(
         CTB_ETA_NEW_SITE_SECTION,
         default_days,
     )
-    return default_days, main_entries, new_entries, needs_normalization or main_invalid or new_invalid
+    suppliers, supplier_invalid = _read_ctb_eta_text_section(
+        parser,
+        CTB_ETA_SUPPLIER_SECTION,
+    )
+    notes, note_invalid = _read_ctb_eta_text_section(
+        parser,
+        CTB_ETA_NOTE_SECTION,
+    )
+    _apply_ctb_eta_text_metadata(main_entries, suppliers, notes)
+    _apply_ctb_eta_text_metadata(new_entries, suppliers, notes)
+    return (
+        default_days,
+        main_entries,
+        new_entries,
+        needs_normalization
+        or main_invalid
+        or new_invalid
+        or supplier_invalid
+        or note_invalid,
+    )
+
+
+def _ctb_eta_all_entries(
+    main_entries: Mapping[str, CtbEtaConfigEntry],
+    new_entries: Mapping[str, CtbEtaConfigEntry],
+) -> list[CtbEtaConfigEntry]:
+    entries = list(main_entries.values())
+    entries.extend(
+        entry
+        for key, entry in new_entries.items()
+        if key not in main_entries
+    )
+    return entries
 
 
 def _write_ctb_eta_config(
     path: Path,
     default_days: int,
-    main_entries: dict[str, tuple[str, int]],
-    new_entries: dict[str, tuple[str, int]],
+    main_entries: Mapping[str, CtbEtaConfigEntry],
+    new_entries: Mapping[str, CtbEtaConfigEntry],
 ) -> None:
     divider = "# " + "＝" * 34
+    all_entries = _ctb_eta_all_entries(main_entries, new_entries)
     lines = [
         f"[{CTB_ETA_CONFIG_SECTION}]",
         "# CTB ETA 預設提前天數；未列出的 Supplier site 使用此值。",
@@ -289,8 +369,8 @@ def _write_ctb_eta_config(
         "# 已確認的 Supplier site。",
     ]
     lines.extend(
-        f"{display} = {days}"
-        for display, days in main_entries.values()
+        f"{entry.display} = {entry.days}"
+        for entry in main_entries.values()
     )
     lines.extend(
         [
@@ -302,8 +382,30 @@ def _write_ctb_eta_config(
         ]
     )
     lines.extend(
-        f"{display} = {days}"
-        for display, days in new_entries.values()
+        f"{entry.display} = {entry.days}"
+        for entry in new_entries.values()
+    )
+    lines.extend(
+        [
+            "",
+            f"[{CTB_ETA_SUPPLIER_SECTION}]",
+            "# Supplier 欄位；會由 open po 偵測帶入，也可手動補充。",
+        ]
+    )
+    lines.extend(
+        f"{entry.display} = {entry.supplier}"
+        for entry in all_entries
+    )
+    lines.extend(
+        [
+            "",
+            f"[{CTB_ETA_NOTE_SECTION}]",
+            "# 備註欄位；可自由填寫，ETA 設定視窗的搜尋備註會查這裡。",
+        ]
+    )
+    lines.extend(
+        f"{entry.display} = {entry.note}"
+        for entry in all_entries
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.tmp")
@@ -314,8 +416,8 @@ def _write_ctb_eta_config(
 def _ctb_eta_settings_result(
     path: Path,
     default_days: int,
-    main_entries: dict[str, tuple[str, int]],
-    pending_entries: dict[str, tuple[str, int]],
+    main_entries: dict[str, CtbEtaConfigEntry],
+    pending_entries: dict[str, CtbEtaConfigEntry],
     *,
     detected_keys: Sequence[str] = (),
     new_sites: Sequence[str] = (),
@@ -328,13 +430,13 @@ def _ctb_eta_settings_result(
         "path": path,
         "default_lead_days": default_days,
         "lead_days_by_supplier_site": {
-            key: days for key, (_display, days) in active_entries.items()
+            key: entry.days for key, entry in active_entries.items()
         },
         "confirmed_supplier_site_entries": dict(main_entries),
         "new_supplier_site_entries": dict(pending_entries),
         "detected_supplier_site_keys": tuple(detected_keys),
         "detected_supplier_sites": tuple(
-            entry[0] for key, entry in active_entries.items() if key in detected_keys
+            entry.display for key, entry in active_entries.items() if key in detected_keys
         ),
         "new_supplier_sites": tuple(new_sites),
         "promoted_supplier_sites": tuple(promoted_sites),
@@ -342,7 +444,35 @@ def _ctb_eta_settings_result(
     }
 
 
-def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[str]) -> dict:
+def _normalize_detected_ctb_eta_sites(
+    supplier_sites: Sequence[Any] | Mapping[str, Any],
+) -> dict[str, tuple[str, str]]:
+    detected: dict[str, tuple[str, str]] = {}
+    items = supplier_sites.items() if isinstance(supplier_sites, Mapping) else supplier_sites
+    for item in items:
+        if isinstance(item, Mapping):
+            raw_site = (
+                item.get("supplier_site")
+                or item.get("site")
+                or item.get("display")
+                or ""
+            )
+            raw_supplier = item.get("supplier", "")
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            raw_site, raw_supplier = item[0], item[1]
+        else:
+            raw_site, raw_supplier = item, ""
+        display = _supplier_site_config_display(raw_site)
+        key = _supplier_site_config_key(display)
+        supplier = _supplier_site_config_display(raw_supplier)
+        if not key:
+            continue
+        if key not in detected or (supplier and not detected[key][1]):
+            detected[key] = (display, supplier)
+    return detected
+
+
+def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[Any] | Mapping[str, Any]) -> dict:
     """Sync detected Supplier Sites while preserving saved ETA lead times."""
     path = root / CTB_ETA_CONFIG_FILE_NAME
     default_days, main_entries, pending_entries, needs_normalization = _read_ctb_eta_config_file(path)
@@ -350,24 +480,27 @@ def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[str]) -> dict:
     for key, entry in pending_entries.items():
         if key not in main_entries:
             main_entries[key] = entry
-            promoted_sites.append(entry[0])
+            promoted_sites.append(entry.display)
     pending_entries = {}
 
-    detected: dict[str, str] = {}
-    for raw_site in supplier_sites:
-        display = _supplier_site_config_display(raw_site)
-        key = _supplier_site_config_key(display)
-        if key:
-            detected.setdefault(key, display)
-    for key, display in sorted(detected.items()):
+    detected = _normalize_detected_ctb_eta_sites(supplier_sites)
+    supplier_changed = False
+    for key, (display, supplier) in sorted(detected.items()):
+        if key in main_entries:
+            entry = main_entries[key]
+            if supplier and entry.supplier != supplier:
+                main_entries[key] = replace(entry, supplier=supplier)
+                supplier_changed = True
+            continue
         if key not in main_entries:
-            pending_entries[key] = (display, default_days)
+            pending_entries[key] = CtbEtaConfigEntry(display, default_days, supplier=supplier)
 
-    new_sites = [display for display, _days in pending_entries.values()]
+    new_sites = [entry.display for entry in pending_entries.values()]
     changed = (
         needs_normalization
         or bool(promoted_sites)
         or bool(new_sites)
+        or supplier_changed
         or not path.is_file()
     )
     if changed:
@@ -393,15 +526,15 @@ def load_ctb_eta_config(path: Path) -> dict:
         default_days,
         main_entries,
         pending_entries,
-        new_sites=tuple(display for display, _days in pending_entries.values()),
+        new_sites=tuple(entry.display for entry in pending_entries.values()),
     )
 
 
 def save_ctb_eta_config(
     path: Path,
     default_days: int,
-    confirmed_entries: Mapping[str, tuple[str, int]],
-    new_entries: Mapping[str, tuple[str, int]],
+    confirmed_entries: Mapping[str, Any],
+    new_entries: Mapping[str, Any],
 ) -> dict:
     """Save GUI-edited CTB ETA entries and return the normalized settings."""
     normalized_default = parse_positive_int(
@@ -411,11 +544,30 @@ def save_ctb_eta_config(
     )
 
     def normalize_entries(
-        entries: Mapping[str, tuple[str, int]],
+        entries: Mapping[str, Any],
         section_label: str,
-    ) -> dict[str, tuple[str, int]]:
-        normalized: dict[str, tuple[str, int]] = {}
-        for raw_key, (raw_display, raw_days) in entries.items():
+    ) -> dict[str, CtbEtaConfigEntry]:
+        normalized: dict[str, CtbEtaConfigEntry] = {}
+        for raw_key, raw_entry in entries.items():
+            if isinstance(raw_entry, CtbEtaConfigEntry):
+                raw_display = raw_entry.display
+                raw_days = raw_entry.days
+                raw_supplier = raw_entry.supplier
+                raw_note = raw_entry.note
+            elif isinstance(raw_entry, Mapping):
+                raw_display = raw_entry.get("display", raw_key)
+                raw_days = raw_entry.get("days", normalized_default)
+                raw_supplier = raw_entry.get("supplier", "")
+                raw_note = raw_entry.get("note", "")
+            else:
+                try:
+                    raw_values = tuple(raw_entry)
+                except TypeError:
+                    raw_values = ()
+                raw_display = raw_values[0] if len(raw_values) >= 1 else raw_key
+                raw_days = raw_values[1] if len(raw_values) >= 2 else normalized_default
+                raw_supplier = raw_values[2] if len(raw_values) >= 3 else ""
+                raw_note = raw_values[3] if len(raw_values) >= 4 else ""
             display = _supplier_site_config_display(raw_display or raw_key)
             key = _supplier_site_config_key(display)
             if not key:
@@ -425,7 +577,12 @@ def save_ctb_eta_config(
                 normalized_default,
                 f"CTB ETA {section_label} {display}",
             )
-            normalized[key] = (display, days)
+            normalized[key] = CtbEtaConfigEntry(
+                display,
+                days,
+                supplier=_supplier_site_config_display(raw_supplier),
+                note=_supplier_site_config_display(raw_note),
+            )
         return normalized
 
     normalized_confirmed = normalize_entries(confirmed_entries, CTB_ETA_SITE_SECTION)

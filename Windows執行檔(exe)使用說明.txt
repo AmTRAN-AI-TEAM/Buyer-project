@@ -38,7 +38,8 @@ CTB：
 2. BOM1 用來將 DPS+PP 的成品需求依 USE 展開成子件需求。
 3. over shortage 用來取得 shortage 起始值；來源 sheet 必須有 Part No 與 OVER SHORTAGE / Over Shortage 欄，程式會直接使用該欄作為 CTB 的 OVER SHORTAGE / balance 起始值。
 4. open po 可用 Item 或 Part No. 搭配 Supplier Site 或 Trading Vendor 對應料號與 Supplier site，
-   並讀取 Quantity Due 或 Qty UnRCV、Need By Date，產出 ETA / PO Remain 列。
+   並讀取 Quantity Due 或 Qty UnRCV、Need By Date；Supplier 欄位可使用 Supplier 或 Shipping Site Code，
+   產出 ETA / PO Remain 列。
 5. CTB 的 D 欄 key 由 C 欄 Part No + E 欄 Code 組成；E 欄 Code 來自 open po 的 Supplier Site。
 6. ETA 會逐筆模擬 Balance，依 Supplier Site 設定的提前天數將 Quantity Due 放到第一個負值期間之前；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 Need By Date。
 7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
@@ -90,12 +91,14 @@ BuyerReports/
    選擇 RAKEN 或「全部執行」時，若 input/RAKEN 內有 Excel，會出現 RAKEN DPS+PP 週數選擇視窗；請選擇 2 週、3 週或 4 週，此選項只影響 output/RAKEN/DPS+PP.xlsx。
    若選定客戶有 CTB 來源，接著會出現 CTB ETA Supplier site 設定視窗。
    已確認區與新偵測區的 Supplier site 都可以直接修改提前天數；雙擊數字後修改，按 Enter 會出現確認視窗。
-   可在搜尋欄輸入部分關鍵字快速篩選 Supplier site，例如輸入 OL 可找到包含 OL 的項目；輸入兩個連續星號 `**` 可代表任意長度的文字，例如輸入 CN**SIO 可找到 CNF22556V-WIESIO。
-   單一星號 `*` 會視為 Supplier site 的一般文字。
+   表格會顯示 Supplier、Supplier site、備註、提前天數與狀態；備註欄可雙擊後直接輸入文字。
+   可用「搜尋 Supplier site」、「搜尋 Supplier」、「搜尋備註」三個欄位快速篩選；搜尋可輸入繁體中文、簡體中文、英文、數字，例如輸入 OL 可找到包含 OL 的項目。
+   輸入兩個連續星號 `**` 可代表任意長度的文字，例如輸入 CN**SIO 可找到 CNF22556V-WIESIO；單一星號 `*` 會視為一般文字。
    清單支援 Ctrl 多選、Shift 連續選取及 Ctrl+A 全選；輸入選取 Supplier site 的提前天數後，可按「套用選取項目」。
    「全部套用預設值」按下後會先出現確認視窗；確認後才會將清單內所有 Supplier site 套用目前預設值，預設為 15 天。
    尚未完成設定的新偵測 Supplier site 只會在狀態欄以紅底標示，完成套用後恢復一般底色。
-   各欄位表頭右側的 ↑/↓ 按鈕可依 Supplier site、提前天數與狀態進行順序／倒序排列；預設會將紅底的新偵測 Supplier site 排在前面。
+   Supplier site 表頭的「隱藏」按鈕可收縮該欄，收縮後只留下紅底「展開」按鈕，再按即可展開。
+   各欄位表頭右側的 ↑/↓ 按鈕可依 Supplier、Supplier site、備註、提前天數與狀態進行順序／倒序排列；預設會將紅底的新偵測 Supplier site 排在前面。
    若本次偵測到新的 Supplier site，會先顯示警告視窗，標題與項目清單之間以空白行分隔。
    設定完成後按「確定並開始執行」才會產出報表；按「取消執行」則取消本次執行。
    執行時會顯示階段式進度條。
@@ -173,10 +176,12 @@ CTB ETA Supplier site 設定：
 1. ctb_eta_days.ini 的 default_lead_days 是預設提前天數，初始值為 15。
 2. [supplier_site] 是已確認區，所有 Supplier site 都可以在 exe 的 ETA 設定視窗中修改。
 3. [supplier_site_new] 是新偵測區，新 Supplier site 會先以預設值加入；下一次執行時會自動移到已確認區。
-4. 設定檔內但本次 open po 沒有出現的已確認 Supplier site，也會列在設定視窗中，仍可修改。
-5. 設定完成後按「確定並開始執行」，修改會保存到 ctb_eta_days.ini，並套用到當次 CTB。
-6. 相同 Supplier site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
-7. ETA 設定視窗可用關鍵字篩選 Supplier site；新偵測且尚未完成設定的 Supplier site 只會在狀態欄顯示紅底，完成套用後恢復一般底色。
+4. [supplier_by_site] 是 Supplier 顯示欄位，會由 open po 偵測帶入；本次未偵測到的 Supplier site 也可以手動補。
+5. [note_by_site] 是備註欄位，預設空白，可直接在文字檔填寫，也可在 ETA 設定視窗雙擊備註欄修改。
+6. 設定檔內但本次 open po 沒有出現的已確認 Supplier site，也會列在設定視窗中，仍可修改。
+7. 設定完成後按「確定並開始執行」，修改會保存到 ctb_eta_days.ini，並套用到當次 CTB。
+8. 相同 Supplier site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
+9. ETA 設定視窗可用 Supplier site、Supplier、備註篩選；搜尋可輸入繁體中文、簡體中文、英文、數字。新偵測且尚未完成設定的 Supplier site 只會在狀態欄顯示紅底，完成套用後恢復一般底色。
 
 輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。DPS / PP 的 total 由程式先計算好，不使用 Excel 公式；CTB 主表的 OVER SHORTAGE、PO Remain、total、Demand / PO summary 與 Balance 期間欄會寫入 Excel 公式，方便使用者開檔後手動調整 ETA / other 並連動重算。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。CTB 會輸出 CTB、DPS+PP、BOM1、over shortage、open po 五張工作表，方便追溯；有原始 CTB 時會套用其表頭、日期欄、列結構與格式，但 A:M 資料列會由程式依 BOM1、open po、over shortage 來源欄位重建；沒有原始 CTB 時仍可新建 CTB。
 
@@ -184,8 +189,8 @@ CTB ETA Supplier site 設定：
 
 1. 找不到 DPS、PP 或 CTB 來源檔
    請確認檔案已放在 input/AVTC 或 input/RAKEN，且 DPS 檔名包含 DPS、PP 檔名包含 PP。
-   若要產 CTB，該客戶資料夾需另外有 BOM1、open po、over shortage 工作表；open po 可使用 Item / Quantity Due / Supplier Site，
-   或對應的 Part No. / Qty UnRCV / Trading Vendor 欄位名稱。
+   若要產 CTB，該客戶資料夾需另外有 BOM1、open po、over shortage 工作表；open po 可使用 Item / Quantity Due / Supplier Site / Supplier，
+   或對應的 Part No. / Qty UnRCV / Trading Vendor / Shipping Site Code 欄位名稱。
    若完全沒有 CTB 來源 sheet，工具只會產出 DPS、PP、DPS+PP，不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因。
 
 2. Windows 顯示「無法訪問指定設備、路徑或文件」

@@ -48,7 +48,8 @@
 2. AVTC 使用 `BOM1` 把 `DPS+PP` 的成品需求依 `USE` 展開成子件需求；RAKEN 則由 `DPS+PP` 成品料號對到光學 CTB 參考檔 `demand` 的 `FG PN`，再用 `PART_NO` 搭配 CTB sheet 的 F 欄用量展開。
 3. `over shortage` 用來取得 shortage 起始值；來源 sheet 必須有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage` 欄，程式會直接使用該欄作為 CTB 的 `OVER SHORTAGE` / balance 起始值。RAKEN 來源為 `shortage.xlsx`。
 4. AVTC `open po` 用 `Item` 或 `Part No.` 與 `Supplier Site` 或 `Trading Vendor` 對應料號與 Supplier site，
-   讀取 `Quantity Due` 或 `Qty UnRCV`、`Need By Date`，產出 ETA / PO Remain 列。
+   讀取 `Quantity Due` 或 `Qty UnRCV`、`Need By Date`，並可用 `Supplier` 或 `Shipping Site Code`
+   帶出 ETA 設定視窗的 Supplier 欄位，產出 ETA / PO Remain 列。
 5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
 6. ETA 會逐筆模擬 Balance，將每筆 `Quantity Due` 放到加入前第一個負值期間依 Supplier Site 設定的天數往前推算所對應的期間；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 `Need By Date`。若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
 7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
@@ -207,6 +208,18 @@ SITE_B = 20
 # ＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
 [supplier_site_new]
 SITE_C = 15
+
+[supplier_by_site]
+# Supplier 欄位；會由 open po 偵測帶入，也可手動補充。
+SITE_A = Supplier A
+SITE_B = Supplier B
+SITE_C = Supplier C
+
+[note_by_site]
+# 備註欄位；可自由填寫，ETA 設定視窗的搜尋備註會查這裡。
+SITE_A =
+SITE_B = 重要料號
+SITE_C =
 ```
 
 `default_lead_days` 是未個別設定 Supplier site 時的預設提前天數；`[supplier_site]` 內可直接修改
@@ -217,11 +230,16 @@ SITE_C = 15
 RAKEN 週次（適用時）與 ETA 設定視窗；已確認區與新偵測區都可以修改，按下「確定並開始執行」
 後才會產出報表。下一次執行時，上一輪的 `[supplier_site_new]` 會自動移到
 `[supplier_site]` 上方區域，並保留你修改過的天數。
+`[supplier_by_site]` 會保存每個 Supplier site 對應的 Supplier；來源 open po 有 Supplier 時會自動帶入，
+本次未偵測到的舊 Supplier site 也可以在這裡手動補。`[note_by_site]` 是自由備註欄，預設空白，
+可以直接在文字檔填寫，Windows ETA 設定視窗也會顯示並保存。
 
-Windows ETA 設定視窗提供 Supplier site 搜尋：直接輸入文字會篩選包含該文字的項目；輸入兩個連續星號 `**` 可代表中間任意長度的文字，
-例如 `CN**SIO` 可找到 `CNF22556V-WIESIO`。單一星號 `*` 會視為 Supplier site 的一般文字，清除後恢復全部 Supplier site。
-表格中的提前天數可用雙擊直接編輯，按 Enter 後會要求確認；清單支援 Ctrl 多選、Shift 連續選取與 Ctrl+A，
-可在「將選取的 Supplier site 設定提前天數」列批次套用。各欄位表頭右側的 ↑/↓ 按鈕可依 Supplier site、提前天數或狀態進行順序／倒序排列，
+Windows ETA 設定視窗提供 Supplier site、Supplier 與備註三個搜尋欄，直接輸入文字會篩選包含該文字的項目；
+搜尋可輸入繁體中文、簡體中文、英文、數字，也會正規化全形/半形英數。輸入兩個連續星號 `**` 可代表中間任意長度的文字，
+例如 `CN**SIO` 可找到 `CNF22556V-WIESIO`。單一星號 `*` 會視為一般文字，清除後恢復全部 Supplier site。
+表格中的備註與提前天數可用雙擊直接編輯，提前天數按 Enter 後會要求確認；Supplier site 表頭的「隱藏」按鈕可收縮該欄，
+收縮後只留下紅底「展開」按鈕，再按即可展開。清單支援 Ctrl 多選、Shift 連續選取與 Ctrl+A，
+可在「將選取的 Supplier site 設定提前天數」列批次套用。各欄位表頭右側的 ↑/↓ 按鈕可依 Supplier、Supplier site、備註、提前天數或狀態進行順序／倒序排列，
 預設會將尚未設定的新 Supplier site 排在最前面。「全部套用預設值」按下後會先要求確認，確認後才將所有 Supplier site
 套用目前的預設提前天數；尚未套用設定的新 Supplier site 會只在狀態欄以紅底標示，完成套用後恢復一般底色。
 新 Supplier site 提醒視窗的標題與項目之間以空白行分隔。
@@ -259,7 +277,8 @@ RAKEN 則使用該資料夾內所有 DPS、PP、光學 CTB 參考檔與 `shortag
 產出的 `CTB.xlsx` 只包含 `CTB` 工作表；光學 CTB 只提供欄位、日期區與列格式，
 不複製其原始料號、數值或公式。
 接著若選定客戶有 CTB 來源，會顯示 CTB ETA Supplier site 設定視窗。已確認 Supplier site
-與新偵測 Supplier site 都可以選取並修改提前天數；可在搜尋欄輸入部分關鍵字或使用 `**` 萬用字元篩選 Supplier site。
+與新偵測 Supplier site 都可以選取並修改提前天數；表格會顯示 Supplier，備註欄可雙擊編輯，
+也可用 Supplier site、Supplier、備註三個搜尋欄篩選。
 「全部套用預設值」會先要求確認，確認後才將目前清單全部設為預設值，預設為 15 天。
 尚未完成設定的新偵測 Supplier site 會只在狀態欄以紅底標示，完成套用後恢復一般底色。按「確定並開始執行」後才會繼續產出。
 exe 會以自身所在資料夾為根目錄，因此整包資料夾可搬到其他位置使用；
@@ -365,7 +384,7 @@ AVTC 的 `CTB.xlsx` 依同一客戶資料夾內的通用來源 sheet 產出；RA
 | DPS+PP | 必須先在本次執行成功產出 `output/<客戶>/DPS+PP.xlsx` |
 | AVTC CTB 來源完整性 | 若完全沒有 CTB 來源 sheet，程式不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因 |
 | AVTC BOM1 | 來源檔需有 `BOM1` sheet，且表頭需有 `Child P/N`、`USE`；程式用 Child P/N 前一欄作為成品料號欄 |
-| AVTC open po | 來源檔需有 `open po` sheet，且表頭需有 `Item` 或 `Part No.`、`Quantity Due` 或 `Qty UnRCV`；`料号+厂商`、`Supplier Site` 或 `Trading Vendor`、`Need By Date` 會一併使用 |
+| AVTC open po | 來源檔需有 `open po` sheet，且表頭需有 `Item` 或 `Part No.`、`Quantity Due` 或 `Qty UnRCV`；`料号+厂商`、`Supplier Site` 或 `Trading Vendor`、`Supplier` 或 `Shipping Site Code`、`Need By Date` 會一併使用 |
 | AVTC over shortage | 來源檔需有 `over shortage` sheet，且表頭需有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage`；程式會直接用 `OVER SHORTAGE` 作為 balance 起始值，並將 `Po Remain`、`HLD`、`BOR MM`、`Overshortage1` 等存在的欄位寫入輔助頁供追溯 |
 | AVTC 原始 CTB | 可選。若來源檔有 `CTB` 或 `CTB-排程` sheet，輸出會套用它的表頭、日期欄、列順序與格式；若日期欄以週起始日表示整週，cutoff 會對應到涵蓋該日期的週欄；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
 | RAKEN 參考 CTB | `光学 CTB 20260701.xlsx` 需有 `demand`、`CTB`、`PO`；B 欄料號主流程由 DPS+PP FG → demand PART_NO 推出，CTB sheet 只補 F 欄用量、搭配料展開與版型。A/C/E/I/J 為 ERP 預留欄，只保留欄位名稱，資料列留白 |
