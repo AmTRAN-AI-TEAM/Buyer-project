@@ -52,8 +52,9 @@
 5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
 6. ETA 會逐筆模擬 Balance，將每筆 `Quantity Due` 放到加入前第一個負值期間依 Supplier Site 設定的天數往前推算所對應的期間；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 `Need By Date`。若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
 7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
-8. 若同一客戶資料夾內另有原始 `CTB` sheet，程式會沿用該 sheet 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 `CTB` sheet，仍會使用程式新建版面輸出。
-9. CTB 主表的 `OVER SHORTAGE` 與 Balance 期間欄、輔助頁 `over shortage` 的 `Over Shortage` 欄若為負數，會以紅色字體顯示。
+8. 若 CTB 版型以週欄表示一整週，cutoff 日期會對應到涵蓋該日期的週欄；例如 `WK41` 的 `10/3-10/9` 會涵蓋 `2026-10-09`，不要求欄位日期必須等於週末日期。
+9. 若同一客戶資料夾內另有原始 `CTB` 或 `CTB-排程` sheet，程式會沿用該 sheet 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 CTB 版型 sheet，仍會使用程式新建版面輸出。
+10. CTB 主表的 `OVER SHORTAGE` 與 Balance 期間欄、輔助頁 `over shortage` 的 `Over Shortage` 欄若為負數，會以紅色字體顯示。
 
 ## 目錄結構
 
@@ -366,7 +367,7 @@ AVTC 的 `CTB.xlsx` 依同一客戶資料夾內的通用來源 sheet 產出；RA
 | AVTC BOM1 | 來源檔需有 `BOM1` sheet，且表頭需有 `Child P/N`、`USE`；程式用 Child P/N 前一欄作為成品料號欄 |
 | AVTC open po | 來源檔需有 `open po` sheet，且表頭需有 `Item` 或 `Part No.`、`Quantity Due` 或 `Qty UnRCV`；`料号+厂商`、`Supplier Site` 或 `Trading Vendor`、`Need By Date` 會一併使用 |
 | AVTC over shortage | 來源檔需有 `over shortage` sheet，且表頭需有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage`；程式會直接用 `OVER SHORTAGE` 作為 balance 起始值，並將 `Po Remain`、`HLD`、`BOR MM`、`Overshortage1` 等存在的欄位寫入輔助頁供追溯 |
-| AVTC 原始 CTB | 可選。若來源檔有 `CTB` sheet，輸出會套用它的表頭、日期欄、列順序與格式；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
+| AVTC 原始 CTB | 可選。若來源檔有 `CTB` 或 `CTB-排程` sheet，輸出會套用它的表頭、日期欄、列順序與格式；若日期欄以週起始日表示整週，cutoff 會對應到涵蓋該日期的週欄；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
 | RAKEN 參考 CTB | `光学 CTB 20260701.xlsx` 需有 `demand`、`CTB`、`PO`；B 欄料號主流程由 DPS+PP FG → demand PART_NO 推出，CTB sheet 只補 F 欄用量、搭配料展開與版型。A/C/E/I/J 為 ERP 預留欄，只保留欄位名稱，資料列留白 |
 | RAKEN demand 對應 | 使用 `demand` 的 `FG PN`、`PART_NO`、`Model`、`VENDOR`；D 欄 `特別用量` 忽略 |
 | RAKEN BOM | 先從本次 `DPS+PP` 有需求的成品料號對應 demand `FG PN`，再取該列 `PART_NO`；若 `PART_NO` 是 CTB 複合群組，會依 CTB F 欄展開成實際子件，若已是單一實際子件則直接使用 |

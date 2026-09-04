@@ -33,6 +33,8 @@ from .dps_pp import week_label_for_date
 
 CTB_OUTPUT_NAME = "CTB.xlsx"
 CTB_SHEET = "CTB"
+# AVTC 來源檔曾使用過「CTB-排程」作為人工版型工作表名稱；兩者內容用途相同。
+CTB_TEMPLATE_SHEET_NAMES = (CTB_SHEET, "CTB-排程")
 CTB_BOM_SHEET = "BOM1"
 CTB_OVER_SHORTAGE_SHEET = "over shortage"
 CTB_OPEN_PO_SHEET = "open po"
@@ -138,6 +140,14 @@ def _sheet_name(wb, target: str) -> str | None:
     return next((name for name in wb.sheetnames if normalize_label(name) == target_norm), None)
 
 
+def _first_sheet_name(wb, targets: Sequence[str]) -> str | None:
+    for target in targets:
+        name = _sheet_name(wb, target)
+        if name is not None:
+            return name
+    return None
+
+
 def workbook_has_sheet(path: Path, sheet_name: str) -> bool:
     try:
         wb = load_workbook(path, read_only=True, data_only=True)
@@ -145,6 +155,17 @@ def workbook_has_sheet(path: Path, sheet_name: str) -> bool:
         return False
     try:
         return _sheet_name(wb, sheet_name) is not None
+    finally:
+        wb.close()
+
+
+def workbook_has_any_sheet(path: Path, sheet_names: Sequence[str]) -> bool:
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001 - caller treats unreadable files as non-candidates
+        return False
+    try:
+        return _first_sheet_name(wb, sheet_names) is not None
     finally:
         wb.close()
 
@@ -196,6 +217,23 @@ def find_optional_workbook_with_sheet(input_dir: Path, sheet_name: str) -> Path 
         if path.is_file()
         and not path.name.startswith("~$")
         and workbook_has_sheet(path, sheet_name)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def find_optional_workbook_with_sheets(
+    input_dir: Path,
+    sheet_names: Sequence[str],
+) -> Path | None:
+    candidates = [
+        path
+        for path in input_dir.glob("*.xlsx")
+        if path.is_file()
+        and not path.name.startswith("~$")
+        and workbook_has_any_sheet(path, sheet_names)
     ]
     if not candidates:
         return None
@@ -1406,6 +1444,31 @@ def _week_period_key(period: Period) -> str | None:
     return None
 
 
+def _period_index_for_cutoff(
+    period_columns: Sequence[tuple[int, Period]],
+    cutoff_end: dt.date,
+) -> int | None:
+    """Find the period containing a DPS cutoff date.
+
+    Daily columns use their exact date. Weekly columns use their buyer-week
+    start date and therefore cover the following six dates as well (for
+    example, the 2026-10-03 WK41 column covers through 2026-10-09).
+    """
+    for idx, (_col, period) in enumerate(period_columns):
+        if period.start == cutoff_end and (
+            _is_by_day_period(period) or _week_period_key(period) is not None
+        ):
+            return idx
+
+    for idx, (_col, period) in enumerate(period_columns):
+        if period.start is None or _week_period_key(period) is None:
+            continue
+        period_end = period.start + dt.timedelta(days=6)
+        if period.start <= cutoff_end <= period_end:
+            return idx
+    return None
+
+
 def _values_for_template_periods(
     source_periods: Sequence[Period],
     source_values: Sequence[float],
@@ -1542,17 +1605,10 @@ def _initial_sum_cols_for_cutoff(
     if cutoff_end is None or not period_columns:
         return None
 
-    cutoff_idx = next(
-        (
-            idx
-            for idx, (_col, period) in enumerate(period_columns)
-            if period.start == cutoff_end
-        ),
-        None,
-    )
+    cutoff_idx = _period_index_for_cutoff(period_columns, cutoff_end)
     if cutoff_idx is None:
         raise SystemExit(
-            f"CTB 找不到 DPS cutoff 日期 {cutoff_end.isoformat()} 對應的期間欄位"
+            f"CTB 找不到涵蓋 DPS cutoff 日期 {cutoff_end.isoformat()} 的期間欄位"
         )
 
     first_sum_idx = 1
@@ -1715,10 +1771,11 @@ def write_ctb_from_template(
     template_wb = load_workbook(template_path, data_only=True)
     formula_wb = load_workbook(template_path, data_only=False)
     try:
-        template_name = _sheet_name(template_wb, CTB_SHEET)
-        formula_name = _sheet_name(formula_wb, CTB_SHEET)
+        template_name = _first_sheet_name(template_wb, CTB_TEMPLATE_SHEET_NAMES)
+        formula_name = _first_sheet_name(formula_wb, CTB_TEMPLATE_SHEET_NAMES)
         if template_name is None or formula_name is None:
-            raise SystemExit(f"{template_path.name} 內找不到 {CTB_SHEET} 工作表")
+            names = " / ".join(CTB_TEMPLATE_SHEET_NAMES)
+            raise SystemExit(f"{template_path.name} 內找不到 {names} 工作表")
         template_ws = template_wb[template_name]
         formula_ws = formula_wb[formula_name]
         ws = wb.active
@@ -1788,6 +1845,7 @@ def write_ctb_from_template(
             "periods": len(period_columns),
             "template_rows": ws.max_row,
             "template_source": template_path,
+            "template_sheet": template_name,
         }
     finally:
         template_wb.close()
@@ -1814,7 +1872,10 @@ def generate_ctb(
     parts = filter_ctb_parts(parts_by_part, part_order)
 
     wb = Workbook()
-    if template_path is not None and workbook_has_sheet(template_path, CTB_SHEET):
+    if template_path is not None and workbook_has_any_sheet(
+        template_path,
+        CTB_TEMPLATE_SHEET_NAMES,
+    ):
         stats = write_ctb_from_template(
             wb,
             template_path,

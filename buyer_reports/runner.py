@@ -42,7 +42,8 @@ from .common import (
 from .compare import compare
 from .ctb import (
     CTB_OUTPUT_NAME,
-    find_optional_workbook_with_sheet,
+    CTB_TEMPLATE_SHEET_NAMES,
+    find_optional_workbook_with_sheets,
     find_workbook_with_sheet,
     generate_ctb,
     has_ctb_input_candidates,
@@ -1795,7 +1796,10 @@ def run_ctb_report(
             "over shortage",
             f"{title} over shortage",
         )
-        template_path = find_optional_workbook_with_sheet(context.input_dir, "CTB")
+        template_path = find_optional_workbook_with_sheets(
+            context.input_dir,
+            CTB_TEMPLATE_SHEET_NAMES,
+        )
         if progress is not None:
             progress.step(f"{title}: 產出報表")
         info = generate_ctb(
@@ -1816,7 +1820,10 @@ def run_ctb_report(
         log(f"  over shortage 來源：{info['over_shortage_source'].name}")
         log(f"  Balance 初始需求：只加總至 DPS cutoff {dps_cutoff_end}")
         if info.get("template_source") is not None:
-            log(f"  CTB 版型來源    ：{info['template_source'].name}（只沿用列結構與格式，數值重算）")
+            log(
+                f"  CTB 版型來源    ：{info['template_source'].name}"
+                f"（工作表 {info.get('template_sheet', 'CTB')}；只沿用列結構與格式，數值重算）"
+            )
         else:
             log("  CTB 版型來源    ：未提供，使用程式新建版面")
         log(
