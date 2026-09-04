@@ -872,6 +872,20 @@ def copy_column_layout(source_ws, target_ws, source_col: int, target_col: int) -
     target_dim.collapsed = source_dim.collapsed
 
 
+def unhide_workbook_columns(wb) -> None:
+    """Ensure generated workbooks do not carry hidden columns or frozen panes."""
+    for ws in wb.worksheets:
+        ws.freeze_panes = None
+        ws.sheet_view.pane = None
+        for dimension in ws.column_dimensions.values():
+            dimension.hidden = False
+            dimension.collapsed = False
+        for col_idx in range(1, ws.max_column + 1):
+            dimension = ws.column_dimensions[get_column_letter(col_idx)]
+            dimension.hidden = False
+            dimension.collapsed = False
+
+
 def copy_row_layout(source_ws, target_ws, source_row: int, target_row: int) -> None:
     source_dim = source_ws.row_dimensions[source_row]
     target_dim = target_ws.row_dimensions[target_row]

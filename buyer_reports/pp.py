@@ -34,6 +34,7 @@ from .common import (
     serial_to_date,
     set_filter_to_used_range,
     sheet_name_matches_keywords,
+    unhide_workbook_columns,
     warn,
     write_number_cell,
     write_text_cell,
@@ -849,7 +850,7 @@ def write_pp_workbook(
         if cell.value is not None:
             cell.font = Font(bold=True)
             cell.alignment = Alignment(horizontal="center")
-    ws.freeze_panes = "D2"
+    ws.freeze_panes = None
     autosize(ws)
     ws.column_dimensions["A"].width = 17.0
     ws.column_dimensions["B"].width = 28.6
@@ -869,6 +870,7 @@ def write_pp_workbook(
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    unhide_workbook_columns(wb)
     wb.save(output_path)
 
 

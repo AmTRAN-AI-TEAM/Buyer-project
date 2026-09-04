@@ -60,6 +60,12 @@ from .dps import (
 )
 from .dps_pp import DPS_PP_OUTPUT_NAME, generate_dps_pp
 from .pp import PP_COMPARE_SHEETS, PP_TIDY_SHEET, generate_pp
+from .raken_adapter import (
+    find_raken_reference_workbook,
+    find_raken_shortage_workbook,
+    generate_raken_ctb,
+    has_raken_ctb_input_candidates,
+)
 
 
 @dataclass(frozen=True)
@@ -384,6 +390,14 @@ def should_prompt_customer_scope(args) -> bool:
 
 
 def _ctb_task_enabled_for_context(args, context: RunContext) -> bool:
+    if context.name.casefold() == "raken":
+        return (
+            not args.skip_ctb
+            and not args.skip_dps
+            and not args.skip_pp
+            and not args.skip_dps_pp
+            and has_raken_ctb_input_candidates(context.input_dir)
+        )
     return (
         not args.skip_ctb
         and not args.skip_dps
@@ -397,6 +411,10 @@ def _collect_ctb_supplier_sites(args, contexts: Sequence[RunContext]) -> tuple[s
     detected: dict[str, str] = {}
     for context in contexts:
         if not _ctb_task_enabled_for_context(args, context):
+            continue
+        if context.name.casefold() == "raken":
+            # RAKEN 的 PO pivot 沒有 Supplier Site；不要用 AVTC 的 open po
+            # 偵測方式，也不要因為此欄缺少而把 RAKEN 視為來源錯誤。
             continue
         title = f"{context.label} CTB"
         try:
@@ -1705,6 +1723,71 @@ def run_ctb_report(
                 "CTB 找不到本次 DPS+PP 的 cutoff 日期，"
                 "為避免套用錯誤 Balance 規則已停止產出"
             )
+
+        if context.name.casefold() == "raken":
+            reference_path = find_raken_reference_workbook(context.input_dir)
+            shortage_path = find_raken_shortage_workbook(context.input_dir)
+            if progress is not None:
+                progress.step(f"{title}: 產出報表")
+            info = generate_raken_ctb(
+                dps_pp_path=dps_pp_path,
+                reference_path=reference_path,
+                shortage_path=shortage_path,
+                output_path=out_path,
+                dps_cutoff_end=dps_cutoff_end,
+                default_eta_lead_days=args.ctb_eta_default_lead_days,
+                eta_lead_days_by_supplier_site=args.ctb_eta_lead_days_by_supplier_site,
+            )
+            log(f"\n--- {title} ---")
+            log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
+            log(
+                f"  CTB 參考來源    ：{info['reference_source'].name}"
+                "（讀取 demand / CTB / PO，並沿用 CTB 版型；不複製原始內容）"
+            )
+            log(f"  shortage 來源   ：{info['shortage_source'].name}（over shortage）")
+            log("  B 欄料號        ：以 DPS+PP FG → demand PART_NO 為主，CTB sheet 僅補用量/搭配料展開")
+            log("  料號排序        ：可計算料號依 input CTB 群組/來源列順序；缺 mapping 成品置於末端")
+            log("  ERP 預留欄      ：A/C/E/I/J 僅保留欄名，資料列留白")
+            log("  BOM 用量        ：使用光學 CTB CTB sheet 的 F 欄；demand 特別用量忽略")
+            log("  Open PO         ：使用 PO sheet 實際子件數量，寫入 CTB H 欄；不建立外部輔助 sheet")
+            log(f"  Balance 初始需求：只加總至 DPS cutoff {dps_cutoff_end}")
+            shortage_count = str(info["over_shortage_rows"])
+            if info.get("over_shortage_source_rows") != info["over_shortage_rows"]:
+                shortage_count = f"{info['over_shortage_rows']}/{info['over_shortage_source_rows']}"
+            open_po_count = str(info["open_po_rows"])
+            if info.get("open_po_source_rows") != info["open_po_rows"]:
+                open_po_count = f"{info['open_po_rows']}/{info['open_po_source_rows']}"
+            log(
+                f"  輸入資料        ：BOM {info['bom_rows']} 列，"
+                f"over shortage {shortage_count} 列，"
+                f"open po {open_po_count} 列"
+            )
+            log(
+                f"  輸出            ：{info['parts']} 個料號，"
+                f"Demand {info['demand_rows']} 列，"
+                f"ETA {info['eta_rows']} 列，"
+                f"other {info['other_rows']} 列，"
+                f"Balance {info['balance_rows']} 列，"
+                f"期間 {info['periods']} 欄"
+            )
+            if info.get("placeholder_parts"):
+                log(
+                    "  缺 mapping 顯示 ："
+                    f"{info['placeholder_parts']} 個 DPS+PP 成品以空白計算列輸出，方便補資料"
+                )
+            log("  輸出內容        ：僅 CTB 工作表")
+            log(f"  產出檔          ：{out_path}")
+            for warning_message in info.get("warnings", []):
+                warn(f"{title}：{warning_message}")
+            if args.compare:
+                warn(f"{title} 目前尚未支援 CTB 逐格對帳，已略過 --compare。")
+            return {
+                "customer": context.name,
+                "kind": "CTB",
+                "ok": True,
+                "output": out_path,
+            }
+
         bom_path = find_workbook_with_sheet(context.input_dir, "BOM1", f"{title} BOM1")
         open_po_path = find_workbook_with_sheet(context.input_dir, "open po", f"{title} open po")
         over_shortage_path = find_workbook_with_sheet(

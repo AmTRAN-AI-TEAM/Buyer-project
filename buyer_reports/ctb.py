@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import CellIsRule
@@ -25,6 +25,7 @@ from .common import (
     normalize_part_number,
     numeric,
     set_filter_to_used_range,
+    unhide_workbook_columns,
     write_number_cell,
     write_text_cell,
 )
@@ -87,6 +88,10 @@ class BomRow:
     remark: str
     vendor: str
     demand: list[float]
+    org: str = ""
+    control_pn: str = ""
+    moq: str = ""
+    allocation: Any = None
 
 
 @dataclass
@@ -124,6 +129,8 @@ class CtbPart:
     bom_rows: list[BomRow] = field(default_factory=list)
     shortage: ShortageRecord | None = None
     open_po: list[OpenPoRecord] = field(default_factory=list)
+    calculation_blank: bool = False
+    placeholder_reason: str = ""
 
 
 def _sheet_name(wb, target: str) -> str | None:
@@ -1071,7 +1078,16 @@ def _write_optional_text_cell(cell, value) -> None:
         _clear_cell(cell)
 
 
-def _write_static_cells(ws, row_idx: int, part: CtbPart, row_type: str, key: str = "", po: OpenPoRecord | None = None) -> None:
+def _write_static_cells(
+    ws,
+    row_idx: int,
+    part: CtbPart,
+    row_type: str,
+    key: str = "",
+    po: OpenPoRecord | None = None,
+    *,
+    source_lookup_formulas: bool = True,
+) -> None:
     shortage = part.shortage
     supplier_site = po.supplier_site if po else ""
     key_value = _eta_key(part.part, supplier_site) if row_type.casefold() == "eta" and po is not None else key
@@ -1089,7 +1105,13 @@ def _write_static_cells(ws, row_idx: int, part: CtbPart, row_type: str, key: str
     _clear_cell(ws.cell(row_idx, 8))
     _clear_cell(ws.cell(row_idx, 9))
     if shortage and row_type.lower().startswith("balance"):
-        _write_formula_cell(ws.cell(row_idx, CTB_OVER_SHORTAGE_COL), _over_shortage_lookup_formula(row_idx))
+        if source_lookup_formulas:
+            _write_formula_cell(ws.cell(row_idx, CTB_OVER_SHORTAGE_COL), _over_shortage_lookup_formula(row_idx))
+        else:
+            write_number_cell(
+                ws.cell(row_idx, CTB_OVER_SHORTAGE_COL),
+                clean_number(shortage.over_shortage),
+            )
     else:
         _clear_cell(ws.cell(row_idx, CTB_OVER_SHORTAGE_COL))
     _clear_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL))
@@ -1105,6 +1127,7 @@ def write_ctb_sheet(
     dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int = ETA_LEAD_DAYS,
     eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
+    source_lookup_formulas: bool = True,
 ) -> dict:
     ws = wb.active
     ws.title = CTB_SHEET
@@ -1130,7 +1153,13 @@ def write_ctb_sheet(
     balance_row_indices: list[int] = []
     for part in parts:
         demand_row = row_idx
-        _write_static_cells(ws, row_idx, part, "Demand")
+        _write_static_cells(
+            ws,
+            row_idx,
+            part,
+            "Demand",
+            source_lookup_formulas=source_lookup_formulas,
+        )
         for offset, value in enumerate(part.demand, start=start_col):
             write_number_cell(ws.cell(row_idx, offset), clean_number(value))
         _write_formula_cell(ws.cell(row_idx, summary_demand_col), _sum_period_formula(row_idx, period_columns))
@@ -1159,8 +1188,26 @@ def write_ctb_sheet(
             eta_row = row_idx
             eta_row_indices.append(eta_row)
             record = po_by_key.get(key)
-            _write_static_cells(ws, row_idx, part, "ETA", key=key, po=record)
-            _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), _open_po_lookup_formula(row_idx))
+            _write_static_cells(
+                ws,
+                row_idx,
+                part,
+                "ETA",
+                key=key,
+                po=record,
+                source_lookup_formulas=source_lookup_formulas,
+            )
+            if source_lookup_formulas:
+                _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), _open_po_lookup_formula(row_idx))
+            else:
+                write_number_cell(
+                    ws.cell(row_idx, CTB_PO_REMAIN_COL),
+                    clean_number(sum(
+                        item.quantity_due
+                        for item in part.open_po
+                        if item.key == key
+                    )),
+                )
             _write_formula_cell(ws.cell(row_idx, CTB_TOTAL_COL), _sum_period_formula(row_idx, period_columns))
             _write_formula_cell(ws.cell(row_idx, summary_po_col), _sum_period_formula(row_idx, period_columns))
             for idx, value in enumerate(schedule):
@@ -1169,14 +1216,26 @@ def write_ctb_sheet(
             row_idx += 1
 
         other_row = row_idx
-        _write_static_cells(ws, row_idx, part, "other")
+        _write_static_cells(
+            ws,
+            row_idx,
+            part,
+            "other",
+            source_lookup_formulas=source_lookup_formulas,
+        )
         for offset in range(start_col, last_period_col + 1):
             write_number_cell(ws.cell(row_idx, offset), 0)
         other_rows += 1
         row_idx += 1
 
         balance_row = row_idx
-        _write_static_cells(ws, row_idx, part, "Balance")
+        _write_static_cells(
+            ws,
+            row_idx,
+            part,
+            "Balance",
+            source_lookup_formulas=source_lookup_formulas,
+        )
         if part.shortage:
             po_remain_formula = _po_remain_formula(balance_row, period_columns, po_remain_period_idx)
             if po_remain_formula is not None:
@@ -1784,6 +1843,7 @@ def generate_ctb(
 
     _enable_formula_recalculation(wb)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    unhide_workbook_columns(wb)
     wb.save(output_path)
     return {
         **stats,

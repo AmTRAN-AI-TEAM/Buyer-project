@@ -4,6 +4,7 @@
 數值一律以原始檔為唯一來源，人工整理版只在 `--compare` 模式下用來對帳。
 目前支援 AVTC / RAKEN 兩組輸入資料夾；RAKEN 的 DPS 會合併多份 DPS 檔，
 同料號同日期累加。
+所有輸出的 Excel 檔案儲存前都會取消欄位隱藏與凍結窗格，避免沿用來源範本的 hidden / freeze panes 狀態。
 
 ## 資料整理規則與前置條件
 
@@ -43,10 +44,10 @@
 
 ### CTB
 
-1. 每個客戶資料夾若同時有 CTB 所需來源 sheet，且本次 `DPS+PP.xlsx` 成功產出，會額外產出 `CTB.xlsx`。
-2. `BOM1` 用來把 `DPS+PP` 的成品需求依 `USE` 展開成子件需求。
-3. `over shortage` 用來取得 shortage 起始值；來源 sheet 必須有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage` 欄，程式會直接使用該欄作為 CTB 的 `OVER SHORTAGE` / balance 起始值。
-4. `open po` 用 `Item` 或 `Part No.` 與 `Supplier Site` 或 `Trading Vendor` 對應料號與 Supplier site，
+1. 每個客戶資料夾若同時有該客戶 CTB 所需來源，且本次 `DPS+PP.xlsx` 成功產出，會額外產出 `CTB.xlsx`。
+2. AVTC 使用 `BOM1` 把 `DPS+PP` 的成品需求依 `USE` 展開成子件需求；RAKEN 則由 `DPS+PP` 成品料號對到光學 CTB 參考檔 `demand` 的 `FG PN`，再用 `PART_NO` 搭配 CTB sheet 的 F 欄用量展開。
+3. `over shortage` 用來取得 shortage 起始值；來源 sheet 必須有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage` 欄，程式會直接使用該欄作為 CTB 的 `OVER SHORTAGE` / balance 起始值。RAKEN 來源為 `shortage.xlsx`。
+4. AVTC `open po` 用 `Item` 或 `Part No.` 與 `Supplier Site` 或 `Trading Vendor` 對應料號與 Supplier site，
    讀取 `Quantity Due` 或 `Qty UnRCV`、`Need By Date`，產出 ETA / PO Remain 列。
 5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
 6. ETA 會逐筆模擬 Balance，將每筆 `Quantity Due` 放到加入前第一個負值期間依 Supplier Site 設定的天數往前推算所對應的期間；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 `Need By Date`。若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
@@ -79,8 +80,8 @@ buyer-reports/
 │   └── RAKEN/
 │       ├── RAKEN 的 DPS 檔，可放多份
 │       ├── RAKEN 的 PP 檔
-│       ├── 含 BOM1 / open po / over shortage 的檔案（若要產 CTB）
-│       └── 含 CTB 的版型檔（選用）
+│       ├── 光学 CTB 20260701.xlsx（含 demand / CTB / PO，若要產 CTB）
+│       └── shortage.xlsx（含 over shortage，若要產 CTB）
 ├── output/                     # 輸出：執行時自動建立（已列入 .gitignore）
 │   ├── AVTC/
 │   │   ├── DPS整理後.xlsx
@@ -116,8 +117,9 @@ RAKEN DPS 會把所有格式正確的 DPS 檔合併，格式不符的檔案會�
 每次執行都會在本次處理的客戶輸出資料夾寫入 `log`，例如
 `output/RAKEN/log`，方便回查成功訊息或錯誤原因。
 同一客戶同時有可用 DPS 與 PP 時，還會額外產出 `DPS+PP.xlsx`。
-若同一客戶資料夾也有 `BOM1`、`open po`、`over shortage` 工作表，會再產出 `CTB.xlsx`。
-若完全沒有 CTB 來源 sheet，程式只會產出 DPS / PP / DPS+PP，不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因。
+AVTC 若同一客戶資料夾也有 `BOM1`、`open po`、`over shortage` 工作表，會再產出 `CTB.xlsx`。
+RAKEN 若有光學 CTB 參考檔與 `shortage.xlsx`，會依 RAKEN 專用規則再產出 `CTB.xlsx`。
+若完全沒有 CTB 來源，程式只會產出 DPS / PP / DPS+PP，不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因。
 
 ## 偵測關鍵字設定
 
@@ -251,7 +253,10 @@ BuyerReports/
 再雙擊 `BuyerReports.exe`。程式會先讓使用者選擇 `AVTC`、`RAKEN` 或「全部執行」；
 選擇的客戶才會在本次產出報表。選擇 RAKEN 或全部執行時，若適用，會先出現 RAKEN 週次選擇視窗。
 若 DPS 與 PP 來源都可用，也會產出 `DPS+PP.xlsx`。
-若該客戶資料夾內另有 `BOM1`、`open po`、`over shortage` 工作表，也會產出 `CTB.xlsx`。
+AVTC 若該客戶資料夾內另有 `BOM1`、`open po`、`over shortage` 工作表，也會產出 `CTB.xlsx`。
+RAKEN 則使用該資料夾內所有 DPS、PP、光學 CTB 參考檔與 `shortage.xlsx` 的專用輸入規則，
+產出的 `CTB.xlsx` 只包含 `CTB` 工作表；光學 CTB 只提供欄位、日期區與列格式，
+不複製其原始料號、數值或公式。
 接著若選定客戶有 CTB 來源，會顯示 CTB ETA Supplier site 設定視窗。已確認 Supplier site
 與新偵測 Supplier site 都可以選取並修改提前天數；可在搜尋欄輸入部分關鍵字或使用 `**` 萬用字元篩選 Supplier site。
 「全部套用預設值」會先要求確認，確認後才將目前清單全部設為預設值，預設為 15 天。
@@ -346,26 +351,35 @@ PP 檔內**沒有原始資料工作表**：逐料號明細只存在於樞紐快�
 | DPS 後段數字 | AVTC 併入 DPS 保留週的最後一天；RAKEN 排除截止日之後的 DPS，由 PP 接續週接手 |
 | PP 接續欄 | 只取 cutover 之後的 PP 週欄與月 FCST 欄 |
 | DPS 尾端空白日期 | 若客戶設定啟用 `dps_trim_trailing_zero_dates`，只會裁掉 DPS 日期區段尾端全空日期欄，不會改變 PP 接續週 |
-| BOM | 若來源檔有 `BOM1`，用 B 欄料號對應 H 欄 vendor；沒有則留空 |
+| BOM | AVTC 若來源檔有 `BOM1`，用 B 欄料號對應 H 欄 vendor；RAKEN 由光學 CTB 的 CTB / demand sheet 建立，使用 CTB F 欄用量，忽略 demand 的特別用量 |
+| RAKEN DPS | 合併 `input/RAKEN/` 內所有可解析的 DPS 檔案，包含 `PRE DPS` 檔案，不因檔名含 PRE 排除 |
 | total | 由程式加總整份 `DPS+PP` 期間欄，以數值寫入 |
 
 ### CTB
 
-`CTB.xlsx` 會以同一客戶資料夾內的來源 sheet 產出，不限定 AVTC 或 RAKEN。
+AVTC 的 `CTB.xlsx` 依同一客戶資料夾內的通用來源 sheet 產出；RAKEN 使用下列專用輸入流程。
 
 | 項目 | 規則 |
 |---|---|
 | DPS+PP | 必須先在本次執行成功產出 `output/<客戶>/DPS+PP.xlsx` |
-| CTB 來源完整性 | 若完全沒有 CTB 來源 sheet，程式不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因 |
-| BOM1 | 來源檔需有 `BOM1` sheet，且表頭需有 `Child P/N`、`USE`；程式用 Child P/N 前一欄作為成品料號欄 |
-| open po | 來源檔需有 `open po` sheet，且表頭需有 `Item` 或 `Part No.`、`Quantity Due` 或 `Qty UnRCV`；`料号+厂商`、`Supplier Site` 或 `Trading Vendor`、`Need By Date` 會一併使用 |
-| over shortage | 來源檔需有 `over shortage` sheet，且表頭需有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage`；程式會直接用 `OVER SHORTAGE` 作為 balance 起始值，並將 `Po Remain`、`HLD`、`BOR MM`、`Overshortage1` 等存在的欄位寫入輔助頁供追溯 |
-| 原始 CTB | 可選。若來源檔有 `CTB` sheet，輸出會套用它的表頭、日期欄、列順序與格式；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
-| Demand | `DPS+PP` 成品需求 × `BOM1` USE，依子件料號彙總 |
-| ETA | 依 `open po` 的 `Quantity Due` 逐筆模擬 Balance；每筆 PO 放在加入前第一個負值期間依 Supplier Site 往前設定的日曆日所對應的期間，未個別設定時預設 15 天。若整個期間沒有負值，則 fallback 至該筆 `Need By Date` |
-| Balance | 使用 `over shortage` 的 `OVER SHORTAGE` 欄作起始 shortage 基準，Balance row 輸出為 Excel 公式，會隨 ETA / other 修改連動重算 |
+| AVTC CTB 來源完整性 | 若完全沒有 CTB 來源 sheet，程式不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因 |
+| AVTC BOM1 | 來源檔需有 `BOM1` sheet，且表頭需有 `Child P/N`、`USE`；程式用 Child P/N 前一欄作為成品料號欄 |
+| AVTC open po | 來源檔需有 `open po` sheet，且表頭需有 `Item` 或 `Part No.`、`Quantity Due` 或 `Qty UnRCV`；`料号+厂商`、`Supplier Site` 或 `Trading Vendor`、`Need By Date` 會一併使用 |
+| AVTC over shortage | 來源檔需有 `over shortage` sheet，且表頭需有 `Part No` 與 `OVER SHORTAGE` / `Over Shortage`；程式會直接用 `OVER SHORTAGE` 作為 balance 起始值，並將 `Po Remain`、`HLD`、`BOR MM`、`Overshortage1` 等存在的欄位寫入輔助頁供追溯 |
+| AVTC 原始 CTB | 可選。若來源檔有 `CTB` sheet，輸出會套用它的表頭、日期欄、列順序與格式；A:M 資料列不直接抄原值，而是依下方欄位規則重建 |
+| RAKEN 參考 CTB | `光学 CTB 20260701.xlsx` 需有 `demand`、`CTB`、`PO`；B 欄料號主流程由 DPS+PP FG → demand PART_NO 推出，CTB sheet 只補 F 欄用量、搭配料展開與版型。A/C/E/I/J 為 ERP 預留欄，只保留欄位名稱，資料列留白 |
+| RAKEN demand 對應 | 使用 `demand` 的 `FG PN`、`PART_NO`、`Model`、`VENDOR`；D 欄 `特別用量` 忽略 |
+| RAKEN BOM | 先從本次 `DPS+PP` 有需求的成品料號對應 demand `FG PN`，再取該列 `PART_NO`；若 `PART_NO` 是 CTB 複合群組，會依 CTB F 欄展開成實際子件，若已是單一實際子件則直接使用 |
+| RAKEN CTB 排序 | 可計算料號依 input CTB sheet 的群組/來源列順序輸出，讓相近料號維持接近；缺 mapping 成品因沒有 CTB 來源列，統一放在末端 |
+| RAKEN 缺 mapping 成品 | 若 `DPS+PP` 有需求的成品料號找不到 demand `FG PN`，仍會在 CTB 末端輸出該成品料號作為補資料提示；F/G/H 與期間計算欄、Balance 公式皆留白 |
+| RAKEN open po | 使用參考 CTB `PO` 的 `行标签` 與 `求和项:Quantity Due`，排除 `(空白)`、`總計`；只補到 DPS+PP→demand→CTB 展開出的實際子件，因來源沒有交期與 Supplier Site，ETA 使用既有預設規則 |
+| RAKEN ERP Price | 使用參考檔 `ERP Price` 的 `Part No.`、`Price`；找不到該 sheet 或欄位時，G 留白並記錄警告 |
+| RAKEN over shortage | 使用 `shortage.xlsx` 的 `over shortage`，讀取 `Part No`、`Po Remain`、`Over Shortage`；只補到 DPS+PP→demand→CTB 展開出的實際子件 |
+| Demand | AVTC 為 `DPS+PP` 成品需求 × `BOM1` USE；RAKEN 為 `DPS+PP` 成品需求 × CTB F 欄用量，依子件料號彙總 |
+| ETA | 依 PO 的 `Quantity Due` 逐筆模擬 Balance；每筆 PO 放在加入前第一個負值期間依 Supplier Site 往前設定的日曆日所對應的期間，未個別設定時預設 15 天。若整個期間沒有負值，則 fallback 至該筆 `Need By Date` |
+| Balance | 使用 `Over Shortage` 作為 balance 起始值，Balance row 輸出為 Excel 公式，會隨 ETA / other 修改連動重算；RAKEN 的數值會直接寫入 CTB，避免引用未輸出的輔助工作表 |
 
-CTB A:M 欄位目前依下列規則輸出：
+AVTC CTB A:M 欄位目前依下列規則輸出：
 
 | 欄位 | 規則 |
 |---|---|
@@ -380,6 +394,22 @@ CTB A:M 欄位目前依下列規則輸出：
 | K PO Remain | ETA row 用 `SUMIF` 加總同 key 的 `open po` Quantity Due；Balance row 使用公式 `J OVER SHORTAGE - by-day 最後一天的 Balance`，偵測不到 by-day 最後一天時才 fallback 到來源值 |
 | L total | ETA row 使用公式加總該 row 的 ETA 日期區數量；其他 row 依目前計算邏輯留空或重算 |
 | M ETA目標 | 保留 row type，例如 `Demand` / `ETA` / `other` / `Balance1` |
+
+RAKEN CTB 則依光學 CTB 的版型輸出 A:J 與期間欄：
+
+| 欄位 | RAKEN 規則 |
+|---|---|
+| A org | ERP 預留欄，只保留欄名，資料列留白 |
+| B 樂軒料號 | 由 DPS+PP 成品料號對 demand `FG PN`，再取 `PART_NO` 並依 CTB 展開後的實際子件料號；若找不到 demand `FG PN`，則先顯示 DPS+PP 成品料號作為補資料 placeholder |
+| C XM 料號AVAP管控 | ERP 預留欄，只保留欄名，資料列留白 |
+| D Model | 取 demand 可對應的 Model；沒有則留白 |
+| E Description | ERP 預留欄，只保留欄名，資料列留白 |
+| F 用量 | 只取 CTB F 欄實際用量；忽略 demand 的特別用量 |
+| G Price | 取 ERP Price 對應料號的 Price；沒有則留白 |
+| H Open PO | 取 PO sheet 的 `Quantity Due`；輸出到實際子件列，與該列 F 用量保持 CTB 的子件計算關係 |
+| I Allocation | ERP 預留欄，只保留欄名，資料列留白 |
+| J 包裝MOQ | ERP 預留欄，只保留欄名，資料列留白 |
+| K 與期間欄 | K 保留 demand / ETA / Balance 列類型；可計算料號會寫入 RAKEN 重算結果，缺 mapping placeholder 的期間欄與 Balance 公式留白 |
 
 ## 常用參數
 

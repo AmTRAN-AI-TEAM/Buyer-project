@@ -29,6 +29,7 @@ from .common import (
     normalize_label,
     normalize_part_number,
     set_filter_to_used_range,
+    unhide_workbook_columns,
     warn,
     write_number_cell,
     write_text_cell,
@@ -467,7 +468,7 @@ def write_dps_workbook(
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center")
-    ws.freeze_panes = "B2"
+    ws.freeze_panes = None
     autosize(ws)
     ws.column_dimensions["A"].width = 24.83
     last_row = len(rows) + 1
@@ -482,6 +483,7 @@ def write_dps_workbook(
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    unhide_workbook_columns(wb)
     wb.save(output_path)
 
 
