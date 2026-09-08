@@ -17,7 +17,7 @@ from copy import copy
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
@@ -709,7 +709,12 @@ def read_raken_bom_rows(
     }
 
 
-def read_raken_open_po(reference_path: Path) -> list[OpenPoRecord]:
+def read_raken_open_po(
+    reference_path: Path,
+    erp_info_by_part: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[OpenPoRecord]:
+    if erp_info_by_part is None:
+        erp_info_by_part, _warning = read_raken_erp_price(reference_path)
     wb = load_workbook(reference_path, read_only=True, data_only=True)
     try:
         sheet_name = next(
@@ -740,13 +745,16 @@ def read_raken_open_po(reference_path: Path) -> list[OpenPoRecord]:
             quantity_due = numeric(values[1] if len(values) > 1 else None)
             if quantity_due == 0:
                 continue
+            erp_info = erp_info_by_part.get(_part_key(item), {})
+            supplier = _text(erp_info.get("supplier", ""))
+            supplier_site = _text(erp_info.get("supplier_site", ""))
             records.append(
                 OpenPoRecord(
                     source_row=row_idx,
-                    key=item,
+                    key=f"{item}{supplier_site}" if supplier_site else item,
                     item=item,
-                    supplier="",
-                    supplier_site="",
+                    supplier=supplier,
+                    supplier_site=supplier_site,
                     quantity_due=quantity_due,
                     need_by_date=None,
                 )
@@ -756,8 +764,8 @@ def read_raken_open_po(reference_path: Path) -> list[OpenPoRecord]:
         wb.close()
 
 
-def read_raken_erp_price(reference_path: Path) -> tuple[dict[str, dict[str, float]], str | None]:
-    """Read optional Price values for the template columns."""
+def read_raken_erp_price(reference_path: Path) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Read optional ERP Price and Vendor/Site metadata for RAKEN parts."""
     wb = load_workbook(reference_path, read_only=True, data_only=True, keep_links=False)
     try:
         sheet_name = next(
@@ -775,17 +783,24 @@ def read_raken_erp_price(reference_path: Path) -> tuple[dict[str, dict[str, floa
                 values_only=True,
             )
         )
-        header_row = _find_header_row(header_rows, ("Part No.", "Price"))
+        header_row = _find_header_row(header_rows, ("Part No.",))
         if header_row is None:
-            return {}, "ERP Price 找不到 Part No. / Price 表頭，G Price 欄留白"
+            return {}, "ERP Price 找不到 Part No. 表頭，G Price 與 Supplier site 欄位留白"
         headers = _header_columns(header_rows[header_row - 1])
         part_col = _find_column(headers, ("Part No.", "Part No"))
+        vendor_col = _find_column(headers, ("Vendor",))
+        site_col = _find_column(headers, ("Vendor Site",))
         price_col = _find_column(headers, ("Price",))
-        if part_col is None or price_col is None:
-            return {}, "ERP Price 缺少 Part No. 或 Price，G Price 欄留白"
+        warnings = []
+        if part_col is None:
+            return {}, "ERP Price 缺少 Part No.，G Price 與 Supplier site 欄位留白"
+        if price_col is None:
+            warnings.append("ERP Price 缺少 Price，G Price 欄留白")
+        if vendor_col is None or site_col is None:
+            warnings.append("ERP Price 缺少 Vendor / Vendor Site，RAKEN Supplier site 偵測將使用既有設定")
 
-        result: dict[str, dict[str, float]] = {}
-        max_col = max(part_col, price_col)
+        result: dict[str, dict[str, Any]] = {}
+        max_col = max(col for col in (part_col, vendor_col, site_col, price_col) if col is not None)
         for values in ws.iter_rows(
             min_row=header_row + 1,
             max_col=max_col,
@@ -800,9 +815,11 @@ def read_raken_erp_price(reference_path: Path) -> tuple[dict[str, dict[str, floa
             if key in result:
                 continue
             result[key] = {
-                "price": _optional_numeric(values[price_col - 1] if price_col <= len(values) else None),
+                "price": _optional_numeric(values[price_col - 1] if price_col and price_col <= len(values) else None),
+                "supplier": _text(values[vendor_col - 1] if vendor_col and vendor_col <= len(values) else ""),
+                "supplier_site": _text(values[site_col - 1] if site_col and site_col <= len(values) else ""),
             }
-        return result, None
+        return result, "；".join(warnings) if warnings else None
     finally:
         wb.close()
 
@@ -841,7 +858,7 @@ def _align_raken_part_names(
         row.child = register(row.child)
     for record in open_po:
         record.item = register(record.item)
-        record.key = record.item
+        record.key = f"{record.item}{record.supplier_site}" if record.supplier_site else record.item
     normalized_shortage: dict[str, ShortageRecord] = {}
     for record in shortage.values():
         record.part = register(record.part)
@@ -1162,7 +1179,7 @@ def write_raken_ctb_sheet(
     template_path: Path,
     periods: Sequence[Period],
     parts: Sequence[CtbPart],
-    price_by_part: dict[str, dict[str, float]],
+    price_by_part: dict[str, dict[str, Any]],
     *,
     dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int,
@@ -1350,7 +1367,7 @@ def _write_raken_row_values(
     *,
     row_type: str,
     use_value: float | str | None,
-    price_by_part: dict[str, dict[str, float]],
+    price_by_part: dict[str, dict[str, Any]],
     open_po: float | None = None,
     calculation_blank: bool = False,
     last_period_col: int,
@@ -1453,7 +1470,8 @@ def generate_raken_ctb(
     bom_rows, bom_info = read_raken_bom_rows(reference_path, periods, demand_by_parent)
     bom_part_keys = _raken_bom_part_keys(bom_rows)
     shortage_source = read_over_shortage(shortage_path)
-    open_po_source = read_raken_open_po(reference_path)
+    price_by_part, price_warning = read_raken_erp_price(reference_path)
+    open_po_source = read_raken_open_po(reference_path, price_by_part)
     shortage = _filter_raken_shortage(shortage_source, bom_part_keys)
     open_po = _filter_raken_open_po(open_po_source, bom_part_keys)
     filter_warnings: list[str] = []
@@ -1476,8 +1494,6 @@ def generate_raken_ctb(
         {_part_key(part.part) for part in parts},
     )
     parts.extend(placeholder_parts)
-    price_by_part, price_warning = read_raken_erp_price(reference_path)
-
     wb = Workbook()
     # RAKEN output intentionally contains only CTB.  Rebuild the values using
     # the optical CTB's layout and styles without copying its source content.

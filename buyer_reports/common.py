@@ -24,6 +24,8 @@ except ImportError:  # pragma: no cover - 打包時 requirements 會安裝；這
 EXCEL_EPOCH = dt.date(1899, 12, 30)
 CONFIG_FILE_NAME = "buyer_reports.ini"
 CTB_ETA_CONFIG_FILE_NAME = "ctb_eta_days.ini"
+AVTC_CTB_ETA_CONFIG_FILE_NAME = "AVTC_ctb_eta_days.ini"
+RAKEN_CTB_ETA_CONFIG_FILE_NAME = "Raken_ctb_eta_days.ini"
 CTB_ETA_CONFIG_SECTION = "ctb_eta"
 CTB_ETA_SITE_SECTION = "supplier_site"
 CTB_ETA_NEW_SITE_SECTION = "supplier_site_new"
@@ -35,6 +37,10 @@ DEFAULT_PP_SHEET_KEYWORDS = ("PP", "Data")
 DEFAULT_DPS_PART_NUMBER_HEADERS = ("AVTC P/N", "P/N", "Model")
 DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS = ("Part Number",)
 DEFAULT_CUSTOMERS = ("AVTC", "RAKEN")
+CUSTOMER_CTB_ETA_CONFIG_FILE_NAMES = {
+    "avtc": AVTC_CTB_ETA_CONFIG_FILE_NAME,
+    "raken": RAKEN_CTB_ETA_CONFIG_FILE_NAME,
+}
 DEFAULT_CUSTOMER_MODES = {
     "AVTC": {
         "dps_mode": "first_valid",
@@ -210,6 +216,13 @@ def _supplier_site_config_key(value) -> str:
 
 def _supplier_site_config_display(value) -> str:
     return "" if value is None else str(value).strip()
+
+
+def ctb_eta_config_file_name(customer_name: str) -> str:
+    return CUSTOMER_CTB_ETA_CONFIG_FILE_NAMES.get(
+        str(customer_name or "").strip().casefold(),
+        CTB_ETA_CONFIG_FILE_NAME,
+    )
 
 
 def _read_ctb_eta_site_section(
@@ -472,10 +485,23 @@ def _normalize_detected_ctb_eta_sites(
     return detected
 
 
-def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[Any] | Mapping[str, Any]) -> dict:
+def sync_ctb_eta_config(
+    root: Path,
+    supplier_sites: Sequence[Any] | Mapping[str, Any],
+    *,
+    config_file_name: str | None = None,
+    fallback_file_names: Sequence[str] = (),
+) -> dict:
     """Sync detected Supplier Sites while preserving saved ETA lead times."""
-    path = root / CTB_ETA_CONFIG_FILE_NAME
-    default_days, main_entries, pending_entries, needs_normalization = _read_ctb_eta_config_file(path)
+    path = root / (config_file_name or CTB_ETA_CONFIG_FILE_NAME)
+    source_path = path
+    if not source_path.is_file():
+        for fallback_name in fallback_file_names:
+            fallback_path = root / fallback_name
+            if fallback_path.is_file():
+                source_path = fallback_path
+                break
+    default_days, main_entries, pending_entries, needs_normalization = _read_ctb_eta_config_file(source_path)
     promoted_sites = []
     for key, entry in pending_entries.items():
         if key not in main_entries:
@@ -502,6 +528,7 @@ def sync_ctb_eta_config(root: Path, supplier_sites: Sequence[Any] | Mapping[str,
         or bool(new_sites)
         or supplier_changed
         or not path.is_file()
+        or source_path != path
     )
     if changed:
         _write_ctb_eta_config(path, default_days, main_entries, pending_entries)

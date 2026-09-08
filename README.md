@@ -50,12 +50,13 @@
 4. AVTC `open po` 用 `Item` 或 `Part No.` 與 `Supplier Site` 或 `Trading Vendor` 對應料號與 Supplier site，
    讀取 `Quantity Due` 或 `Qty UnRCV`、`Need By Date`，並可用 `Supplier` 或 `Shipping Site Code`
    帶出 ETA 設定視窗的 Supplier 欄位，產出 ETA / PO Remain 列。
-5. CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
-6. ETA 會逐筆模擬 Balance，將每筆 `Quantity Due` 放到加入前第一個負值期間依 Supplier Site 設定的天數往前推算所對應的期間；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 `Need By Date`。若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
-7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
-8. 若 CTB 版型以週欄表示一整週，cutoff 日期會對應到涵蓋該日期的週欄；例如 `WK41` 的 `10/3-10/9` 會涵蓋 `2026-10-09`，不要求欄位日期必須等於週末日期。
-9. 若同一客戶資料夾內另有原始 `CTB` 或 `CTB-排程` sheet，程式會沿用該 sheet 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 CTB 版型 sheet，仍會使用程式新建版面輸出。
-10. CTB 主表的 `OVER SHORTAGE` 與 Balance 期間欄、輔助頁 `over shortage` 的 `Over Shortage` 欄若為負數，會以紅色字體顯示。
+5. RAKEN `PO` 用 `行标签` 對應料號與 `Quantity Due`；Supplier site 會由 `ERP Price` 的 `Vendor Site` 帶入，Supplier 會由 `Vendor` 帶入。
+6. AVTC CTB 的 D 欄 key 由 C 欄 `Part No` + E 欄 `Code` 組成；E 欄 `Code` 來自 `open po` 的 `Supplier Site`。
+7. ETA 會逐筆模擬 Balance，將每筆 `Quantity Due` 放到加入前第一個負值期間依 Supplier Site 設定的天數往前推算所對應的期間；未個別設定時預設往前 15 個日曆日。AVTC 若整個期間沒有負值，才使用該筆 `Need By Date`。若人工曾調整 ETA 日期，自動產出日期可能與人工版不同。
+8. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
+9. 若 CTB 版型以週欄表示一整週，cutoff 日期會對應到涵蓋該日期的週欄；例如 `WK41` 的 `10/3-10/9` 會涵蓋 `2026-10-09`，不要求欄位日期必須等於週末日期。
+10. 若同一客戶資料夾內另有原始 `CTB` 或 `CTB-排程` sheet，程式會沿用該 sheet 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 CTB 版型 sheet，仍會使用程式新建版面輸出。
+11. CTB 主表的 `OVER SHORTAGE` 與 Balance 期間欄、輔助頁 `over shortage` 的 `Over Shortage` 欄若為負數，會以紅色字體顯示。
 
 ## 目錄結構
 
@@ -64,7 +65,8 @@ buyer-reports/
 ├── build_exe.bat               # Windows 打包腳本（產生 exe）
 ├── generate_buyer_reports.py   # 入口檔
 ├── buyer_reports.ini           # sheet / 欄位偵測關鍵字設定
-├── ctb_eta_days.ini            # CTB ETA Supplier Site 提前天數（執行時自動建立）
+├── AVTC_ctb_eta_days.ini       # AVTC CTB ETA Supplier Site 提前天數
+├── Raken_ctb_eta_days.ini      # RAKEN CTB ETA Supplier Site 提前天數
 ├── buyer_reports/              # 主程式模組
 │   ├── common.py               # 共用工具、log、Excel helper、Windows exe 判斷
 │   ├── dps.py                  # DPS 解析與輸出
@@ -189,9 +191,15 @@ Windows 使用者只要修改 exe 同層的 `buyer_reports.ini` 即可，不需�
 
 ## CTB ETA Supplier Site 設定
 
-命令列或 Windows exe 執行時，若本次有可產出的 CTB，程式會先讀取所有 `open po` 的 `Supplier Site`，
-並在專案根目錄自動建立或更新 `ctb_eta_days.ini`。這份檔案與 `buyer_reports.ini`
-分開，會保留到下次執行，不需要每次重新輸入。
+命令列或 Windows exe 執行時，若本次有可產出的 CTB，程式會依客戶讀取並更新各自的 ETA 設定檔：
+AVTC 使用 `AVTC_ctb_eta_days.ini`，RAKEN 使用 `Raken_ctb_eta_days.ini`。這些檔案與
+`buyer_reports.ini` 分開，會保留到下次執行，不需要每次重新輸入。若只有舊版
+`ctb_eta_days.ini`，AVTC 會先用它建立新的 `AVTC_ctb_eta_days.ini`。
+
+AVTC 會從 `open po` 的 `Supplier Site` 或 `Trading Vendor` 偵測 Supplier site，並用
+`Supplier` 或 `Shipping Site Code` 帶出 Supplier。RAKEN 會從參考 CTB 的 `PO` sheet 讀取料號與
+`Quantity Due`，再用 `ERP Price` 的 `Part No.` 對回 `Vendor Site` 作為 Supplier site、
+`Vendor` 作為 Supplier。
 
 檔案格式如下：
 
@@ -210,7 +218,7 @@ SITE_B = 20
 SITE_C = 15
 
 [supplier_by_site]
-# Supplier 欄位；會由 open po 偵測帶入，也可手動補充。
+# Supplier 欄位；會由來源檔偵測帶入，也可手動補充。
 SITE_A = Supplier A
 SITE_B = Supplier B
 SITE_C = Supplier C
@@ -230,7 +238,7 @@ SITE_C =
 RAKEN 週次（適用時）與 ETA 設定視窗；已確認區與新偵測區都可以修改，按下「確定並開始執行」
 後才會產出報表。下一次執行時，上一輪的 `[supplier_site_new]` 會自動移到
 `[supplier_site]` 上方區域，並保留你修改過的天數。
-`[supplier_by_site]` 會保存每個 Supplier site 對應的 Supplier；來源 open po 有 Supplier 時會自動帶入，
+`[supplier_by_site]` 會保存每個 Supplier site 對應的 Supplier；來源檔有 Supplier 時會自動帶入，
 本次未偵測到的舊 Supplier site 也可以在這裡手動補。`[note_by_site]` 是自由備註欄，預設空白，
 可以直接在文字檔填寫，Windows ETA 設定視窗也會顯示並保存。
 
@@ -246,8 +254,8 @@ Windows ETA 設定視窗提供 Supplier site、Supplier 與備註三個搜尋欄
 
 程式會直接使用作業系統預設的文字檔案應用程式開啟設定檔；檔案開啟後，程式會等待你
 編輯並關閉檔案，再按 Enter 繼續讀取設定。
-設定檔內但本次沒有出現在 open PO 的已確認 Supplier site，也會列在 Windows ETA 設定視窗中，
-仍可修改。相同 Supplier site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
+設定檔內但本次沒有出現在來源 PO 的已確認 Supplier site，也會列在 Windows ETA 設定視窗中，
+仍可修改。AVTC 與 RAKEN 使用不同 ETA 設定檔；即使 Supplier site 文字相同，提前天數也不會跨客戶共用。
 
 ## Windows 執行檔
 
@@ -258,7 +266,8 @@ BuyerReports/
 ├── BuyerReports.exe
 ├── _internal/
 ├── buyer_reports.ini
-├── ctb_eta_days.ini            # 可選；不存在時第一次執行會自動建立
+├── AVTC_ctb_eta_days.ini       # 可選；AVTC CTB ETA 設定
+├── Raken_ctb_eta_days.ini      # 可選；RAKEN CTB ETA 設定
 ├── input/
 │   ├── AVTC/
 │   └── RAKEN/
@@ -276,7 +285,7 @@ AVTC 若該客戶資料夾內另有 `BOM1`、`open po`、`over shortage` 工作�
 RAKEN 則使用該資料夾內所有 DPS、PP、光學 CTB 參考檔與 `shortage.xlsx` 的專用輸入規則，
 產出的 `CTB.xlsx` 只包含 `CTB` 工作表；光學 CTB 只提供欄位、日期區與列格式，
 不複製其原始料號、數值或公式。
-接著若選定客戶有 CTB 來源，會顯示 CTB ETA Supplier site 設定視窗。已確認 Supplier site
+接著若選定客戶有 CTB 來源，會依客戶顯示 CTB ETA Supplier site 設定視窗。已確認 Supplier site
 與新偵測 Supplier site 都可以選取並修改提前天數；表格會顯示 Supplier，備註欄可雙擊編輯，
 也可用 Supplier site、Supplier、備註三個搜尋欄篩選。
 「全部套用預設值」會先要求確認，確認後才將目前清單全部設為預設值，預設為 15 天。
@@ -296,8 +305,8 @@ build_exe.bat
 ```
 
 打包完成後產物會在 `release/BuyerReports/`。腳本會自動建立 `input/`、
-`output/`，並複製使用說明與 `buyer_reports.ini`；若打包時專案根目錄已有
-`ctb_eta_days.ini`，也會一併複製。若要提供 zip 給使用者，
+`output/`，並複製使用說明、`buyer_reports.ini`、`AVTC_ctb_eta_days.ini` 與
+`Raken_ctb_eta_days.ini`。若要提供 zip 給使用者，
 可自行壓縮要交付的 release 資料夾；使用者仍需要先完整解壓縮後再執行。
 
 ## 資料規律（本工具依據的規則）
@@ -392,8 +401,8 @@ AVTC 的 `CTB.xlsx` 依同一客戶資料夾內的通用來源 sheet 產出；RA
 | RAKEN BOM | 先從本次 `DPS+PP` 有需求的成品料號對應 demand `FG PN`，再取該列 `PART_NO`；若 `PART_NO` 是 CTB 複合群組，會依 CTB F 欄展開成實際子件，若已是單一實際子件則直接使用 |
 | RAKEN CTB 排序 | 可計算料號依 input CTB sheet 的群組/來源列順序輸出，讓相近料號維持接近；缺 mapping 成品因沒有 CTB 來源列，統一放在末端 |
 | RAKEN 缺 mapping 成品 | 若 `DPS+PP` 有需求的成品料號找不到 demand `FG PN`，仍會在 CTB 末端輸出該成品料號作為補資料提示；F/G/H 與期間計算欄、Balance 公式皆留白 |
-| RAKEN open po | 使用參考 CTB `PO` 的 `行标签` 與 `求和项:Quantity Due`，排除 `(空白)`、`總計`；只補到 DPS+PP→demand→CTB 展開出的實際子件，因來源沒有交期與 Supplier Site，ETA 使用既有預設規則 |
-| RAKEN ERP Price | 使用參考檔 `ERP Price` 的 `Part No.`、`Price`；找不到該 sheet 或欄位時，G 留白並記錄警告 |
+| RAKEN open po | 使用參考 CTB `PO` 的 `行标签` 與 `求和项:Quantity Due`，排除 `(空白)`、`總計`；只補到 DPS+PP→demand→CTB 展開出的實際子件，並用 `ERP Price` 依 `Part No.` 補 Supplier / Supplier site 後套用 ETA 提前天數 |
+| RAKEN ERP Price | 使用參考檔 `ERP Price` 的 `Part No.`、`Price`、`Vendor`、`Vendor Site`；`Vendor Site` 對應 Supplier site，`Vendor` 對應 Supplier。同料號多筆時沿用第一筆，維持與 Excel VLOOKUP 類似的 first match 行為 |
 | RAKEN over shortage | 使用 `shortage.xlsx` 的 `over shortage`，讀取 `Part No`、`Po Remain`、`Over Shortage`；只補到 DPS+PP→demand→CTB 展開出的實際子件 |
 | Demand | AVTC 為 `DPS+PP` 成品需求 × `BOM1` USE；RAKEN 為 `DPS+PP` 成品需求 × CTB F 欄用量，依子件料號彙總 |
 | ETA | 依 PO 的 `Quantity Due` 逐筆模擬 Balance；每筆 PO 放在加入前第一個負值期間依 Supplier Site 往前設定的日曆日所對應的期間，未個別設定時預設 15 天。若整個期間沒有負值，則 fallback 至該筆 `Need By Date` |

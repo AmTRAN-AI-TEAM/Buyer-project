@@ -31,3 +31,5 @@ intput/**/*.xlsx
 
 # Local CTB ETA settings
 ctb_eta_days.ini
+AVTC_ctb_eta_days.ini
+Raken_ctb_eta_days.ini

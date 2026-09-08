@@ -64,7 +64,8 @@ if not exist release\BuyerReports\output\AVTC mkdir release\BuyerReports\output\
 if not exist release\BuyerReports\output\RAKEN mkdir release\BuyerReports\output\RAKEN
 copy /Y "Windows執行檔(exe)使用說明.txt" "release\BuyerReports\Windows執行檔(exe)使用說明.txt" >nul
 copy /Y "buyer_reports.ini" "release\BuyerReports\buyer_reports.ini" >nul
-if exist "ctb_eta_days.ini" copy /Y "ctb_eta_days.ini" "release\BuyerReports\ctb_eta_days.ini" >nul
+if exist "AVTC_ctb_eta_days.ini" copy /Y "AVTC_ctb_eta_days.ini" "release\BuyerReports\AVTC_ctb_eta_days.ini" >nul
+if exist "Raken_ctb_eta_days.ini" copy /Y "Raken_ctb_eta_days.ini" "release\BuyerReports\Raken_ctb_eta_days.ini" >nul
 
 echo.
 echo Done.

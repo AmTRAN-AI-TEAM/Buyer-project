@@ -37,15 +37,16 @@ CTB：
 1. 同一個客戶資料夾內若有 BOM1、open po、over shortage 工作表，且本次 DPS+PP.xlsx 成功產出，會額外產出 CTB.xlsx。
 2. BOM1 用來將 DPS+PP 的成品需求依 USE 展開成子件需求。
 3. over shortage 用來取得 shortage 起始值；來源 sheet 必須有 Part No 與 OVER SHORTAGE / Over Shortage 欄，程式會直接使用該欄作為 CTB 的 OVER SHORTAGE / balance 起始值。
-4. open po 可用 Item 或 Part No. 搭配 Supplier Site 或 Trading Vendor 對應料號與 Supplier site，
+4. AVTC open po 可用 Item 或 Part No. 搭配 Supplier Site 或 Trading Vendor 對應料號與 Supplier site，
    並讀取 Quantity Due 或 Qty UnRCV、Need By Date；Supplier 欄位可使用 Supplier 或 Shipping Site Code，
    產出 ETA / PO Remain 列。
-5. CTB 的 D 欄 key 由 C 欄 Part No + E 欄 Code 組成；E 欄 Code 來自 open po 的 Supplier Site。
-6. ETA 會逐筆模擬 Balance，依 Supplier Site 設定的提前天數將 Quantity Due 放到第一個負值期間之前；未個別設定時預設往前 15 個日曆日。若整個期間沒有負值，才使用該筆 Need By Date。
-7. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
-8. 若同一個客戶資料夾內有原始 CTB 工作表，程式會沿用該 CTB 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 CTB，仍會用程式新建版面產出。
-9. CTB 主表的 OVER SHORTAGE 與 Balance 期間欄、輔助頁 over shortage 的 Over Shortage 欄若為負數，會以紅色字體顯示。
-10. CTB A:M 欄位規則：A/G/H/I 保留欄位但資料列空白；B 由 BOM1 的 Model+USE 組成，找不到來源則空白；D= C+E，ETA row 會寫入公式；E 取 open po 的 Supplier Site；F 只有在 BOM1 vendor 是乾淨來源時填入，若是反查 CTB 的公式或找不到來源則空白；J 用 SUMIF 從 over shortage 的 OVER SHORTAGE / Over Shortage 欄查回；K 在 ETA row 用 SUMIF 加總 open po Quantity Due，在 Balance row 使用公式 J OVER SHORTAGE - by-day 最後一天的 Balance；L total 會加總該 ETA row 的日期區數量；M 保留 Demand / ETA / other / Balance 等 row type。
+5. RAKEN PO 使用 行标签 與 Quantity Due；Supplier site 由 ERP Price 的 Vendor Site 帶入，Supplier 由 Vendor 帶入。
+6. AVTC CTB 的 D 欄 key 由 C 欄 Part No + E 欄 Code 組成；E 欄 Code 來自 open po 的 Supplier Site。
+7. ETA 會逐筆模擬 Balance，依 Supplier Site 設定的提前天數將 Quantity Due 放到第一個負值期間之前；未個別設定時預設往前 15 個日曆日。AVTC 若整個期間沒有負值，才使用該筆 Need By Date。
+8. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
+9. 若同一個客戶資料夾內有原始 CTB 工作表，程式會沿用該 CTB 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 CTB，仍會用程式新建版面產出。
+10. CTB 主表的 OVER SHORTAGE 與 Balance 期間欄、輔助頁 over shortage 的 Over Shortage 欄若為負數，會以紅色字體顯示。
+11. CTB A:M 欄位規則：A/G/H/I 保留欄位但資料列空白；B 由 BOM1 的 Model+USE 組成，找不到來源則空白；D= C+E，ETA row 會寫入公式；E 取 open po 的 Supplier Site；F 只有在 BOM1 vendor 是乾淨來源時填入，若是反查 CTB 的公式或找不到來源則空白；J 用 SUMIF 從 over shortage 的 OVER SHORTAGE / Over Shortage 欄查回；K 在 ETA row 用 SUMIF 加總 open po Quantity Due，在 Balance row 使用公式 J OVER SHORTAGE - by-day 最後一天的 Balance；L total 會加總該 ETA row 的日期區數量；M 保留 Demand / ETA / other / Balance 等 row type。
 
 二、資料夾結構
 
@@ -55,7 +56,8 @@ BuyerReports/
   BuyerReports.exe
   _internal/
   buyer_reports.ini
-  ctb_eta_days.ini（可選；不存在時第一次執行會自動建立）
+  AVTC_ctb_eta_days.ini（可選；AVTC CTB ETA 設定，不存在時第一次執行會自動建立）
+  Raken_ctb_eta_days.ini（可選；RAKEN CTB ETA 設定，不存在時第一次執行會自動建立）
   input/
     AVTC/
     RAKEN/
@@ -67,7 +69,7 @@ BuyerReports/
 注意：輸入資料夾名稱是 input，請不要改名。
 注意：AVTC 檔案請放 input/AVTC，RAKEN 檔案請放 input/RAKEN。
 注意：buyer_reports.ini 是 sheet / 欄位偵測關鍵字設定，請和 BuyerReports.exe 放在同一層。
-注意：ctb_eta_days.ini 是 CTB ETA Supplier Site 提前天數設定，請和 BuyerReports.exe 放在同一層；若檔案不存在，程式會自動建立。
+注意：AVTC_ctb_eta_days.ini 與 Raken_ctb_eta_days.ini 是 CTB ETA Supplier Site 提前天數設定，請和 BuyerReports.exe 放在同一層；若檔案不存在，程式會自動建立。
 注意：如果收到的是 zip 壓縮檔，請先完整解壓縮，不要在壓縮檔視窗內直接雙擊 BuyerReports.exe。
 
 三、使用步驟
@@ -89,7 +91,7 @@ BuyerReports/
    若 Windows 顯示 SmartScreen 警告，請確認檔案來源可信後，點「更多資訊」再點「仍要執行」。
    首先請選擇本次要處理的客戶：AVTC、RAKEN 或「全部執行」。選擇 AVTC 時會略過 RAKEN 週次設定。
    選擇 RAKEN 或「全部執行」時，若 input/RAKEN 內有 Excel，會出現 RAKEN DPS+PP 週數選擇視窗；請選擇 2 週、3 週或 4 週，此選項只影響 output/RAKEN/DPS+PP.xlsx。
-   若選定客戶有 CTB 來源，接著會出現 CTB ETA Supplier site 設定視窗。
+   若選定客戶有 CTB 來源，接著會依客戶出現 CTB ETA Supplier site 設定視窗；全部執行時 AVTC 與 RAKEN 會分別使用各自的設定檔。
    已確認區與新偵測區的 Supplier site 都可以直接修改提前天數；雙擊數字後修改，按 Enter 會出現確認視窗。
    表格會顯示 Supplier、Supplier site、備註、提前天數與狀態；備註欄可雙擊後直接輸入文字。
    可用「搜尋 Supplier site」、「搜尋 Supplier」、「搜尋備註」三個欄位快速篩選；搜尋可輸入繁體中文、簡體中文、英文、數字，例如輸入 OL 可找到包含 OL 的項目。
@@ -173,24 +175,25 @@ dps_pp_late_dps_mode = merge_to_cutoff 代表 DPS 截止日之後的數字併入
 Windows exe 雙擊執行時，RAKEN 的 dps_pp_dps_weeks_ahead 可由啟動畫面選擇 2 / 3 / 4 週，該次執行會以視窗選擇為準，不需修改 buyer_reports.ini。
 
 CTB ETA Supplier site 設定：
-1. ctb_eta_days.ini 的 default_lead_days 是預設提前天數，初始值為 15。
+1. AVTC 使用 AVTC_ctb_eta_days.ini，RAKEN 使用 Raken_ctb_eta_days.ini；default_lead_days 是預設提前天數，初始值為 15。
 2. [supplier_site] 是已確認區，所有 Supplier site 都可以在 exe 的 ETA 設定視窗中修改。
 3. [supplier_site_new] 是新偵測區，新 Supplier site 會先以預設值加入；下一次執行時會自動移到已確認區。
-4. [supplier_by_site] 是 Supplier 顯示欄位，會由 open po 偵測帶入；本次未偵測到的 Supplier site 也可以手動補。
+4. [supplier_by_site] 是 Supplier 顯示欄位，會由來源檔偵測帶入；AVTC 來自 open po 的 Supplier / Shipping Site Code，RAKEN 來自 ERP Price 的 Vendor。
 5. [note_by_site] 是備註欄位，預設空白，可直接在文字檔填寫，也可在 ETA 設定視窗雙擊備註欄修改。
-6. 設定檔內但本次 open po 沒有出現的已確認 Supplier site，也會列在設定視窗中，仍可修改。
-7. 設定完成後按「確定並開始執行」，修改會保存到 ctb_eta_days.ini，並套用到當次 CTB。
-8. 相同 Supplier site 目前在 AVTC 與 RAKEN 共用同一個提前天數。
-9. ETA 設定視窗可用 Supplier site、Supplier、備註篩選；搜尋可輸入繁體中文、簡體中文、英文、數字。新偵測且尚未完成設定的 Supplier site 只會在狀態欄顯示紅底，完成套用後恢復一般底色。
+6. RAKEN 的 Supplier site 由 ERP Price 的 Vendor Site 帶入，再用 Part No. 對回 PO 的行标签。
+7. 設定檔內但本次來源 PO 沒有出現的已確認 Supplier site，也會列在設定視窗中，仍可修改。
+8. 設定完成後按「確定並開始執行」，修改會保存到該客戶的 ETA 設定檔，並套用到當次 CTB。
+9. AVTC 與 RAKEN 不共用提前天數；即使 Supplier site 文字相同，也會分別存在各自的 ini。
+10. ETA 設定視窗可用 Supplier site、Supplier、備註篩選；搜尋可輸入繁體中文、簡體中文、英文、數字。新偵測且尚未完成設定的 Supplier site 只會在狀態欄顯示紅底，完成套用後恢復一般底色。
 
-輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。DPS / PP 的 total 由程式先計算好，不使用 Excel 公式；CTB 主表的 OVER SHORTAGE、PO Remain、total、Demand / PO summary 與 Balance 期間欄會寫入 Excel 公式，方便使用者開檔後手動調整 ETA / other 並連動重算。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。CTB 會輸出 CTB、DPS+PP、BOM1、over shortage、open po 五張工作表，方便追溯；有原始 CTB 時會套用其表頭、日期欄、列結構與格式，但 A:M 資料列會由程式依 BOM1、open po、over shortage 來源欄位重建；沒有原始 CTB 時仍可新建 CTB。
+輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。DPS / PP 的 total 由程式先計算好，不使用 Excel 公式；CTB 主表的 OVER SHORTAGE、PO Remain、total、Demand / PO summary 與 Balance 期間欄會寫入 Excel 公式，方便使用者開檔後手動調整 ETA / other 並連動重算。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。AVTC CTB 會輸出 CTB、DPS+PP、BOM1、over shortage、open po 五張工作表，方便追溯；RAKEN CTB 只輸出 CTB 工作表。有原始 CTB 時會套用其表頭、日期欄、列結構與格式，但 A:M 資料列會由程式依來源欄位重建；沒有原始 CTB 時仍可新建 CTB。
 
 五、常見問題
 
 1. 找不到 DPS、PP 或 CTB 來源檔
    請確認檔案已放在 input/AVTC 或 input/RAKEN，且 DPS 檔名包含 DPS、PP 檔名包含 PP。
-   若要產 CTB，該客戶資料夾需另外有 BOM1、open po、over shortage 工作表；open po 可使用 Item / Quantity Due / Supplier Site / Supplier，
-   或對應的 Part No. / Qty UnRCV / Trading Vendor / Shipping Site Code 欄位名稱。
+   AVTC 若要產 CTB，該客戶資料夾需另外有 BOM1、open po、over shortage 工作表；open po 可使用 Item / Quantity Due / Supplier Site / Supplier，
+   或對應的 Part No. / Qty UnRCV / Trading Vendor / Shipping Site Code 欄位名稱。RAKEN 若要產 CTB，需有含 demand / CTB / PO / ERP Price 的光學 CTB 參考檔，以及含 over shortage 的 shortage.xlsx。
    若完全沒有 CTB 來源 sheet，工具只會產出 DPS、PP、DPS+PP，不會嘗試產 CTB；若只有部分 CTB 來源，CTB 會略過並在 log 中顯示原因。
 
 2. Windows 顯示「無法訪問指定設備、路徑或文件」

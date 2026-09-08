@@ -22,6 +22,7 @@ from .common import (
     Progress,
     clean_number,
     close_run_log,
+    ctb_eta_config_file_name,
     first_sheet_matching_keywords,
     header_date,
     is_frozen_app,
@@ -67,6 +68,7 @@ from .raken_adapter import (
     find_raken_shortage_workbook,
     generate_raken_ctb,
     has_raken_ctb_input_candidates,
+    read_raken_open_po,
 )
 
 
@@ -415,18 +417,18 @@ def _collect_ctb_supplier_sites(args, contexts: Sequence[RunContext]) -> tuple[t
     for context in contexts:
         if not _ctb_task_enabled_for_context(args, context):
             continue
-        if context.name.casefold() == "raken":
-            # RAKEN 的 PO pivot 沒有 Supplier Site；不要用 AVTC 的 open po
-            # 偵測方式，也不要因為此欄缺少而把 RAKEN 視為來源錯誤。
-            continue
         title = f"{context.label} CTB"
         try:
-            open_po_path = find_workbook_with_sheet(
-                context.input_dir,
-                "open po",
-                f"{title} open po",
-            )
-            records = read_open_po(open_po_path)
+            if context.name.casefold() == "raken":
+                reference_path = find_raken_reference_workbook(context.input_dir)
+                records = read_raken_open_po(reference_path)
+            else:
+                open_po_path = find_workbook_with_sheet(
+                    context.input_dir,
+                    "open po",
+                    f"{title} open po",
+                )
+                records = read_open_po(open_po_path)
         except (SystemExit, Exception) as exc:  # noqa: BLE001 - CTB 本身會再回報來源錯誤
             warn(f"{title} 無法讀取 Supplier site，將使用既有設定。原因：{_error_message(exc)}")
             continue
@@ -445,11 +447,15 @@ def _collect_ctb_supplier_sites(args, contexts: Sequence[RunContext]) -> tuple[t
     )
 
 
-def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
+def _show_ctb_new_supplier_site_warning(
+    new_sites: Sequence[str],
+    customer_label: str = "",
+) -> None:
     if not new_sites:
         return
+    prefix = f"{customer_label} " if customer_label else ""
     message = (
-        "本次偵測到新的 Supplier site：\n"
+        f"{prefix}本次偵測到新的 Supplier site：\n"
         "\n"
         + "\n".join(f"- {site}" for site in new_sites)
     )
@@ -462,7 +468,7 @@ def _show_ctb_new_supplier_site_warning(new_sites: Sequence[str]) -> None:
         root.attributes("-topmost", True)
         try:
             messagebox.showwarning(
-                "CTB ETA 設定提醒",
+                f"{prefix}CTB ETA 設定提醒",
                 message,
                 parent=root,
             )
@@ -496,7 +502,10 @@ def _supplier_site_matches_query(site: str, query: str) -> bool:
     return _matches_query(site, query)
 
 
-def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
+def _show_ctb_eta_settings_dialog(
+    settings: dict,
+    customer_label: str = "",
+) -> dict | None:
     try:
         import tkinter as tk
         from tkinter import messagebox, ttk
@@ -561,7 +570,8 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
     selection_anchor = {"key": None}
     active_editor = {"widget": None, "key": None, "field": None, "committing": False}
 
-    root.title("CTB ETA Supplier site 設定")
+    title_prefix = f"{customer_label} " if customer_label else ""
+    root.title(f"{title_prefix}CTB ETA Supplier site 設定")
     root.geometry("1160x700")
     root.minsize(980, 560)
     root.attributes("-topmost", True)
@@ -575,7 +585,7 @@ def _show_ctb_eta_settings_dialog(settings: dict) -> dict | None:
 
     ttk.Label(
         main_frame,
-        text="CTB ETA Supplier site 設定",
+        text=f"{title_prefix}CTB ETA Supplier site 設定",
         font=("Microsoft JhengHei UI", 12, "bold"),
     ).grid(row=0, column=0, columnspan=3, sticky="w")
     ttk.Label(
@@ -1333,17 +1343,46 @@ def _edit_ctb_eta_config(path: Path) -> None:
     input("設定檔開啟後，編輯並關閉檔案，再按 Enter 繼續：")
 
 
-def _apply_ctb_eta_settings(args, settings: dict) -> None:
+def _ctb_eta_context_key(context: RunContext) -> str:
+    return str(context.name or "").strip().casefold()
+
+
+def _default_ctb_eta_settings(context: RunContext) -> dict:
+    path = project_root() / ctb_eta_config_file_name(context.name)
+    return {
+        "path": path,
+        "default_lead_days": DEFAULT_CTB_ETA_LEAD_DAYS,
+        "lead_days_by_supplier_site": {},
+        "confirmed_supplier_site_entries": {},
+        "new_supplier_site_entries": {},
+        "detected_supplier_site_keys": (),
+        "detected_supplier_sites": (),
+        "new_supplier_sites": (),
+        "promoted_supplier_sites": (),
+        "changed": False,
+    }
+
+
+def _store_ctb_eta_settings(args, context: RunContext, settings: dict) -> None:
+    if not hasattr(args, "ctb_eta_settings_by_customer"):
+        args.ctb_eta_settings_by_customer = {}
+    args.ctb_eta_settings_by_customer[_ctb_eta_context_key(context)] = settings
+    # Keep the legacy attributes populated for older call paths and log helpers.
     args.ctb_eta_config_path = settings["path"]
     args.ctb_eta_default_lead_days = settings["default_lead_days"]
     args.ctb_eta_lead_days_by_supplier_site = settings["lead_days_by_supplier_site"]
 
 
+def _ctb_eta_settings_for_context(args, context: RunContext) -> dict:
+    settings_by_customer = getattr(args, "ctb_eta_settings_by_customer", {})
+    return settings_by_customer.get(_ctb_eta_context_key(context)) or _default_ctb_eta_settings(context)
+
+
 def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
-    default_path = project_root() / CTB_ETA_CONFIG_FILE_NAME
-    args.ctb_eta_config_path = default_path
+    args.ctb_eta_config_path = project_root() / CTB_ETA_CONFIG_FILE_NAME
     args.ctb_eta_default_lead_days = DEFAULT_CTB_ETA_LEAD_DAYS
     args.ctb_eta_lead_days_by_supplier_site = {}
+    args.ctb_eta_settings_by_customer = {}
     args.startup_cancelled = False
 
     ctb_contexts = [
@@ -1354,52 +1393,69 @@ def prepare_ctb_eta_settings(args, contexts: Sequence[RunContext]) -> None:
     if not ctb_contexts:
         return
 
-    detected_sites = _collect_ctb_supplier_sites(args, ctb_contexts)
-    settings = sync_ctb_eta_config(project_root(), detected_sites)
-    _apply_ctb_eta_settings(args, settings)
-    log(f"CTB ETA 設定檔：{settings['path']}")
-    log(
-        f"CTB ETA 天數    ：預設 {settings['default_lead_days']} 天，"
-        f"Supplier site 覆寫 {len(settings['lead_days_by_supplier_site'])} 項"
-    )
-    if settings["promoted_supplier_sites"]:
-        log(
-            "CTB ETA 已移至已確認區："
-            + "、".join(settings["promoted_supplier_sites"])
+    show_dialogs = should_prompt_customer_scope(args)
+    project = project_root()
+    for context in ctb_contexts:
+        detected_sites = _collect_ctb_supplier_sites(args, [context])
+        config_name = ctb_eta_config_file_name(context.name)
+        fallback_names = (
+            (CTB_ETA_CONFIG_FILE_NAME,)
+            if context.name.casefold() == "avtc"
+            else ()
         )
-    if settings["new_supplier_sites"]:
-        log()
-        log("CTB ETA 新 Supplier site（目前先使用預設天數）：")
-        for site in settings["new_supplier_sites"]:
-            log(f"  - {site}")
-        log()
+        settings = sync_ctb_eta_config(
+            project,
+            detected_sites,
+            config_file_name=config_name,
+            fallback_file_names=fallback_names,
+        )
+        _store_ctb_eta_settings(args, context, settings)
+        log(f"{context.label} CTB ETA 設定檔：{settings['path']}")
+        log(
+            f"{context.label} CTB ETA 天數    ：預設 {settings['default_lead_days']} 天，"
+            f"Supplier site 覆寫 {len(settings['lead_days_by_supplier_site'])} 項"
+        )
+        if settings["promoted_supplier_sites"]:
+            log(
+                f"{context.label} CTB ETA 已移至已確認區："
+                + "、".join(settings["promoted_supplier_sites"])
+            )
+        if settings["new_supplier_sites"]:
+            log()
+            log(f"{context.label} CTB ETA 新 Supplier site（目前先使用預設天數）：")
+            for site in settings["new_supplier_sites"]:
+                log(f"  - {site}")
+            log()
 
-    if should_prompt_customer_scope(args):
-        _show_ctb_new_supplier_site_warning(settings["new_supplier_sites"])
-        edited_settings = _show_ctb_eta_settings_dialog(settings)
-        if edited_settings is None:
-            args.startup_cancelled = True
-            log("使用者取消 CTB ETA 設定，本次執行已取消。")
-            return
-        _apply_ctb_eta_settings(args, edited_settings)
-        log("CTB ETA 設定已由啟動畫面確認，當次 CTB 將使用畫面上的天數。")
+        if show_dialogs:
+            _show_ctb_new_supplier_site_warning(settings["new_supplier_sites"], context.label)
+            edited_settings = _show_ctb_eta_settings_dialog(settings, context.label)
+            if edited_settings is None:
+                args.startup_cancelled = True
+                log("使用者取消 CTB ETA 設定，本次執行已取消。")
+                return
+            _store_ctb_eta_settings(args, context, edited_settings)
+            log(f"{context.label} CTB ETA 設定已由啟動畫面確認，當次 CTB 將使用畫面上的天數。")
+
+    if show_dialogs or args.quiet or not sys.stdin.isatty():
         return
 
-    if args.quiet or not sys.stdin.isatty():
-        return
+    for context in ctb_contexts:
+        settings = _ctb_eta_settings_for_context(args, context)
+        try:
+            answer = input(
+                f"是否要開啟 {context.label} CTB ETA Supplier site 設定檔調整天數？(Y/N)："
+            )
+        except EOFError:
+            answer = "N"
+        if answer.strip().casefold() not in {"y", "yes"}:
+            log(f"{context.label} CTB ETA 設定檔未開啟，沿用目前設定。")
+            continue
 
-    try:
-        answer = input("是否要開啟 CTB ETA Supplier site 設定檔調整天數？(Y/N)：")
-    except EOFError:
-        answer = "N"
-    if answer.strip().casefold() not in {"y", "yes"}:
-        log("CTB ETA 設定檔未開啟，沿用目前設定。")
-        return
-
-    _show_ctb_new_supplier_site_warning(settings["new_supplier_sites"])
-    _edit_ctb_eta_config(settings["path"])
-    _apply_ctb_eta_settings(args, load_ctb_eta_config(settings["path"]))
-    log("CTB ETA 設定檔已重新讀取，當次 CTB 將使用編輯後的天數。")
+        _show_ctb_new_supplier_site_warning(settings["new_supplier_sites"], context.label)
+        _edit_ctb_eta_config(settings["path"])
+        _store_ctb_eta_settings(args, context, load_ctb_eta_config(settings["path"]))
+        log(f"{context.label} CTB ETA 設定檔已重新讀取，當次 CTB 將使用編輯後的天數。")
 
 
 def build_run_contexts(args) -> list[RunContext]:
@@ -2040,6 +2096,10 @@ def run_ctb_report(
                 "CTB 找不到本次 DPS+PP 的 cutoff 日期，"
                 "為避免套用錯誤 Balance 規則已停止產出"
             )
+        eta_settings = _ctb_eta_settings_for_context(args, context)
+        eta_default_days = eta_settings["default_lead_days"]
+        eta_lead_days_by_site = eta_settings["lead_days_by_supplier_site"]
+        eta_config_path = eta_settings["path"]
 
         if context.name.casefold() == "raken":
             reference_path = find_raken_reference_workbook(context.input_dir)
@@ -2052,8 +2112,8 @@ def run_ctb_report(
                 shortage_path=shortage_path,
                 output_path=out_path,
                 dps_cutoff_end=dps_cutoff_end,
-                default_eta_lead_days=args.ctb_eta_default_lead_days,
-                eta_lead_days_by_supplier_site=args.ctb_eta_lead_days_by_supplier_site,
+                default_eta_lead_days=eta_default_days,
+                eta_lead_days_by_supplier_site=eta_lead_days_by_site,
             )
             log(f"\n--- {title} ---")
             log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
@@ -2066,8 +2126,16 @@ def run_ctb_report(
             log("  料號排序        ：可計算料號依 input CTB 群組/來源列順序；缺 mapping 成品置於末端")
             log("  ERP 預留欄      ：A/C/E/I/J 僅保留欄名，資料列留白")
             log("  BOM 用量        ：使用光學 CTB CTB sheet 的 F 欄；demand 特別用量忽略")
-            log("  Open PO         ：使用 PO sheet 實際子件數量，寫入 CTB H 欄；不建立外部輔助 sheet")
+            log("  Open PO         ：使用 PO sheet 實際子件數量；Supplier site 由 ERP Price Vendor Site 對應")
             log(f"  Balance 初始需求：只加總至 DPS cutoff {dps_cutoff_end}")
+            log(
+                f"  ETA 日期規則    ：逐筆模擬 Balance，第一個負值期間依 Supplier site 往前"
+                f" {eta_default_days} 個日曆日（未覆寫時）"
+            )
+            log(
+                f"  ETA Supplier site 覆寫：{len(eta_lead_days_by_site)} 項，"
+                f"設定檔 {eta_config_path}"
+            )
             shortage_count = str(info["over_shortage_rows"])
             if info.get("over_shortage_source_rows") != info["over_shortage_rows"]:
                 shortage_count = f"{info['over_shortage_rows']}/{info['over_shortage_source_rows']}"
@@ -2126,8 +2194,8 @@ def run_ctb_report(
             output_path=out_path,
             template_path=template_path,
             dps_cutoff_end=dps_cutoff_end,
-            default_eta_lead_days=args.ctb_eta_default_lead_days,
-            eta_lead_days_by_supplier_site=args.ctb_eta_lead_days_by_supplier_site,
+            default_eta_lead_days=eta_default_days,
+            eta_lead_days_by_supplier_site=eta_lead_days_by_site,
         )
         log(f"\n--- {title} ---")
         log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
@@ -2168,12 +2236,12 @@ def run_ctb_report(
         )
         log(
             f"  ETA 日期規則    ：逐筆模擬 Balance，第一個負值期間依 Supplier site 往前"
-            f" {args.ctb_eta_default_lead_days} 個日曆日（未覆寫時）；"
+            f" {eta_default_days} 個日曆日（未覆寫時）；"
             "若無負值則 fallback 至 open po Need By Date"
         )
         log(
-            f"  ETA Supplier site 覆寫：{len(args.ctb_eta_lead_days_by_supplier_site)} 項，"
-            f"設定檔 {args.ctb_eta_config_path}"
+            f"  ETA Supplier site 覆寫：{len(eta_lead_days_by_site)} 項，"
+            f"設定檔 {eta_config_path}"
         )
         log(f"  產出檔          ：{out_path}")
         if args.compare:
