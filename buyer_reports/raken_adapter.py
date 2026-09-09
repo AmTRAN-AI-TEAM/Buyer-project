@@ -57,7 +57,6 @@ from .ctb import (
 )
 
 
-RAKEN_REFERENCE_NAME = "光学 CTB 20260701.xlsx"
 RAKEN_DEMAND_SHEET = "demand"
 RAKEN_REFERENCE_CTB_SHEET = "CTB"
 RAKEN_PO_SHEET = "PO"
@@ -288,16 +287,11 @@ def _reference_candidates(input_dir: Path) -> list[Path]:
 
 
 def find_raken_reference_workbook(input_dir: Path) -> Path:
-    preferred = input_dir / RAKEN_REFERENCE_NAME
-    if preferred.is_file() and all(
-        workbook_has_sheet(preferred, sheet)
-        for sheet in (RAKEN_DEMAND_SHEET, RAKEN_REFERENCE_CTB_SHEET, RAKEN_PO_SHEET)
-    ):
-        return preferred
     candidates = _reference_candidates(input_dir)
     if not candidates:
         raise SystemExit(
-            f"找不到 RAKEN 光學 CTB 參考檔：{input_dir} 內需有 demand、CTB、PO 工作表"
+            f"找不到 RAKEN CTB 參考檔：{input_dir} 內需有同時包含 "
+            "demand、CTB、PO 工作表的 .xlsx"
         )
     return candidates[0]
 
