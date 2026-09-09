@@ -14,15 +14,17 @@ DPS：
 
 PP：
 1. 檔名需包含 PP 字眼。
-2. 程式會依活頁簿順序抓第一張名稱包含 PP 或 Data 且含樞紐分析表的工作表，作為欄位版面與客戶排序來源。
+2. 程式會優先依活頁簿順序抓第一張名稱包含 PP 或 Data 且含樞紐分析表的工作表，作為欄位版面與客戶排序來源。
 3. 該樞紐分析表對應的 pivot cache 內必須有 Plan、Customer、Model，並有名稱包含 Part Number 的料號欄位。
-4. Plan 欄位的值預設必須是 Production Input，程式才會納入計算。
-5. 週別與月份欄位需符合 Excel 樞紐表 / pivot cache 的格式。
-6. 跨月但同週的項目會合併加總，例如 WK36 和 WK36 Sep 會寫進同一個 WK36。
-7. 程式會抓 pivot cache 的更新日所在週再減一，作為可見版面起始週。例如更新日是 2026-07-31，屬於第 31 週，所以可見版面會從 WK30 開始銜接。
-8. 起始週以前、同年度的 WK 週欄會從 pivot cache 補齊輸出，即使來源樞紐欄位清單未勾選也會顯示在整理後檔案中，但不納入 total。
-9. 來源樞紐報表中被隱藏的時間欄位也會納入計算，並在整理後檔案中顯示出來。
-10. 沒有週明細的月份會直接以月份欄位作為輸出。
+4. 若找不到可用樞紐分析表，程式會改讀非樞紐 PP 工作表：先找名稱包含 PP 或 Data 的 sheet，找不到就抓第一張 sheet；該 sheet 必須有 Customer、Model、名稱包含 Part Number 的料號欄，以及 WKxx / 月份期間欄。
+5. 樞紐 PP 的 Plan 欄位預設必須是 Production Input，程式才會納入計算；非樞紐 PP 視為 buyer 已篩選好的結果，不再套用 Plan 篩選。
+6. 週別與月份欄位需符合 Excel 樞紐表 / pivot cache 或非樞紐表頭格式。
+7. 跨月但同週的項目會合併加總，例如 WK36 和 WK36 Sep 會寫進同一個 WK36。
+8. 樞紐 PP 會抓 pivot cache 的更新日所在週再減一，作為可見版面起始週。例如更新日是 2026-07-31，屬於第 31 週，所以可見版面會從 WK30 開始銜接；非樞紐 PP 未指定起始週時，會從來源表第一個 WKxx 期間欄開始。
+9. 起始週以前、同年度的 WK 週欄會從 pivot cache 補齊輸出，即使來源樞紐欄位清單未勾選也會顯示在整理後檔案中，但不納入 total。
+10. 來源工作表中被隱藏的時間欄位也會納入計算，並在整理後檔案中顯示出來。
+11. 沒有週明細的月份會直接以月份欄位作為輸出。
+12. RAKEN 非樞紐 PP 若有 Base on model，輸出料號會以該欄取代 RAKEN FG Part Number；這只是名稱替換，同名顯示列仍分開保留，不會合併數值。
 
 DPS+PP：
 1. 同一個客戶資料夾內 DPS 與 PP 都能成功讀取時，會額外產出 DPS+PP.xlsx。
@@ -31,7 +33,8 @@ DPS+PP：
 4. AVTC 預設 DPS 保留含目前 buyer week 共 5 週；例如目前 WK34，DPS 到 WK38，PP 從 WK39 開始。
 5. RAKEN 的 DPS 保留週數可在 INI 設定；雙擊 exe 時若 input/RAKEN 有 Excel，會先跳出視窗讓使用者選擇 RAKEN 保留 2 / 3 / 4 週。
 6. DPS 若在 PP 接續週含之後仍有數字，AVTC 會併入 DPS 保留週的最後一天；RAKEN 會排除截止日之後的 DPS，由 PP 接續週接手，避免重複。
-7. 若來源檔內有 BOM1 工作表，程式會用 BOM1 的 B 欄料號對應 H 欄 vendor 寫入 BOM；若沒有，BOM 欄留空。
+7. RAKEN 非樞紐 PP 若有 Base on model，DPS+PP A 欄會顯示該值；同名顯示列仍分開保留，不會因名稱替換合併數值。
+8. 若來源檔內有 BOM1 工作表，程式會用 BOM1 的 B 欄料號對應 H 欄 vendor 寫入 BOM；若沒有，BOM 欄留空。
 
 CTB：
 1. 同一個客戶資料夾內若有 BOM1、open po、over shortage 工作表，且本次 DPS+PP.xlsx 成功產出，會額外產出 CTB.xlsx。
@@ -205,7 +208,7 @@ CTB ETA Supplier site 設定：
 
 4. 找不到符合規則的 DPS 或 PP 工作表
    DPS 請確認至少有一張工作表名稱包含 DPS，且內含 Line、W/O、INI 內任一 DPS 料號欄別名與日期欄。
-   PP 請確認至少有一張工作表名稱包含 buyer_reports.ini 內的 PP 關鍵字，且該工作表內有樞紐分析表。
+   PP 會優先使用名稱包含 buyer_reports.ini 內 PP 關鍵字且含樞紐分析表的工作表；若沒有樞紐分析表，請確認 PP 關鍵字工作表或第一張工作表有 Customer、Model、名稱包含 Part Number 的料號欄，以及 WKxx / 月份期間欄。
 
 5. 只有其中一份報表產出
    代表另一份來源檔可能格式不符。請查看對應客戶 output 資料夾內的 log。
@@ -215,8 +218,8 @@ CTB ETA Supplier site 設定：
    請確認輸出檔沒有被 Excel 開著，或整個資料夾沒有被設為唯讀。
 
 7. PP 數字看起來不是最新
-   本工具讀取 PP 檔案內的樞紐快取。若提供者交檔前沒有 refresh 樞紐分析表，
-   工具讀到的可能是舊快取。
+   樞紐 PP 會讀取檔案內的樞紐快取。若提供者交檔前沒有 refresh 樞紐分析表，
+   工具讀到的可能是舊快取。非樞紐 PP 則直接讀來源工作表上的期間欄數字。
 
 8. 只有原始資料、沒有人工整理後工作表
    工具仍可產出報表；只是樣式會改用內建基本版面。

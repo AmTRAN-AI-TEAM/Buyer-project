@@ -80,6 +80,13 @@ class Period:
     source_col: int
 
 
+@dataclass(frozen=True)
+class DpsPpDemandRow:
+    source_row: int
+    parent: str
+    demand: list[float]
+
+
 @dataclass
 class BomRow:
     source_row: int
@@ -268,7 +275,7 @@ def _month_label(date: dt.date | None, fallback: str = "") -> str:
     return date.strftime("%b").upper() if date else fallback
 
 
-def read_dps_pp(dps_pp_path: Path) -> tuple[list[Period], dict[str, list[float]]]:
+def read_dps_pp_rows(dps_pp_path: Path) -> tuple[list[Period], list[DpsPpDemandRow]]:
     wb = load_workbook(dps_pp_path, data_only=True)
     try:
         sheet_name = _sheet_name(wb, CTB_DPS_PP_SHEET)
@@ -304,8 +311,8 @@ def read_dps_pp(dps_pp_path: Path) -> tuple[list[Period], dict[str, list[float]]
                 )
             )
 
-        demand_by_parent: dict[str, list[float]] = {}
-        for row in ws.iter_rows(min_row=5, values_only=True):
+        demand_rows: list[DpsPpDemandRow] = []
+        for row_idx, row in enumerate(ws.iter_rows(min_row=5, values_only=True), start=5):
             parent = normalize_part_number(row[0])
             if not parent:
                 continue
@@ -313,12 +320,22 @@ def read_dps_pp(dps_pp_path: Path) -> tuple[list[Period], dict[str, list[float]]
                 numeric(row[period.source_col - 1] if period.source_col - 1 < len(row) else None)
                 for period in periods
             ]
-            existing = demand_by_parent.setdefault(parent, [0.0] * len(periods))
-            for idx, value in enumerate(values):
-                existing[idx] += value
-        return periods, demand_by_parent
+            demand_rows.append(
+                DpsPpDemandRow(source_row=row_idx, parent=parent, demand=values)
+            )
+        return periods, demand_rows
     finally:
         wb.close()
+
+
+def read_dps_pp(dps_pp_path: Path) -> tuple[list[Period], dict[str, list[float]]]:
+    periods, demand_rows = read_dps_pp_rows(dps_pp_path)
+    demand_by_parent: dict[str, list[float]] = {}
+    for row in demand_rows:
+        existing = demand_by_parent.setdefault(row.parent, [0.0] * len(periods))
+        for idx, value in enumerate(row.demand):
+            existing[idx] += value
+    return periods, demand_by_parent
 
 
 def _find_header_row(ws, labels: Sequence[str], max_row: int = 20) -> int | None:

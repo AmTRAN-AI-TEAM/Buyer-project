@@ -1836,14 +1836,34 @@ def run_pp_report(args, context: RunContext, progress: Progress | None = None) -
             log(f"\n--- {title} ---")
             log(f"  來源            ：{info['source'].name}")
             log(f"  版面工作表      ：{info['layout_sheet']}")
-            log(f"  樞紐分析表      ：{info['pivot_table'] or '未知'}")
-            log(f"  樞紐快取        ：{info['cache_part']}"
-                f"（原始表 {info['cache_source_sheet'] or '未知'}，{info['records']} 筆）")
+            if info.get("source_format") == "flat":
+                log("  來源格式        ：非樞紐工作表")
+                log("  樞紐分析表      ：無")
+                log(
+                    f"  樞紐快取        ：無（直接讀取工作表 "
+                    f"{info['cache_source_sheet'] or info['layout_sheet']}，{info['records']} 筆）"
+                )
+            else:
+                log("  來源格式        ：樞紐分析表")
+                log(f"  樞紐分析表      ：{info['pivot_table'] or '未知'}")
+                log(f"  樞紐快取        ：{info['cache_part']}"
+                    f"（原始表 {info['cache_source_sheet'] or '未知'}，{info['records']} 筆）")
             log(f"  料號欄          ：{info['part_number_field']}")
-            log(f"  快取更新        ：{info['refreshed_date']} by {info['refreshed_by'] or '未知'}")
+            if info.get("base_on_model_rows"):
+                log(
+                    f"  Base on model   ：{info['base_on_model_rows']} 筆取代料號顯示；"
+                    f"替換後同名列 {info['base_on_model_duplicate_display_rows']} 筆已保留不合併"
+                )
+            if info.get("source_format") == "flat":
+                log("  快取更新        ：無（非樞紐工作表）")
+            else:
+                log(f"  快取更新        ：{info['refreshed_date']} by {info['refreshed_by'] or '未知'}")
             log(f"  報表基準日      ：{info['report_date']}"
                 f"（主年度 20{info['base_year']}，起始週 WK{info['start_week']:02d}）")
-            log(f"  欄位版面        ：{'取自可見樞紐報表' if info['layout_found'] else '推導模式'}")
+            if info.get("source_format") == "flat":
+                log("  欄位版面        ：取自非樞紐工作表表頭")
+            else:
+                log(f"  欄位版面        ：{'取自可見樞紐報表' if info['layout_found'] else '推導模式'}")
             if info["historical_cache_periods"]:
                 log(
                     "  快取補齊歷史週  ："
@@ -1859,7 +1879,13 @@ def run_pp_report(args, context: RunContext, progress: Progress | None = None) -
                     "  來源隱藏期間欄  ："
                     f"{', '.join(info['hidden_source_periods'])}（整理後已顯示）"
                 )
-            log(f"  Plan 篩選       ：{info['plan']}（{info['plan_rows']} 筆料號）")
+            if info.get("plan_filter_applied", True):
+                log(f"  Plan 篩選       ：{info['plan']}（{info['plan_rows']} 筆料號）")
+            else:
+                log(
+                    "  Plan 篩選       ：未套用"
+                    f"（非樞紐 PP 視為已篩選資料，{info['plan_rows']} 筆料號）"
+                )
             log(f"  期間欄          ：{len(info['periods'])} 欄 → {', '.join(info['periods'])}")
             log(f"  輸出            ：{info['rows']} 列"
                 f"（已略過期間內全為 0 的 {info['dropped_zero']} 個料號），"
@@ -1988,7 +2014,22 @@ def run_dps_pp_report(args, context: RunContext, progress: Progress | None = Non
             )
             log(f"  PP 來源         ：{info['pp_source'].name}")
             log(f"  PP 工作表       ：{info['pp_sheet']}；料號欄={info['pp_part_number_field']}")
-            log(f"  PP 樞紐快取     ：{info['pp_cache']}")
+            if info.get("pp_base_on_model_rows"):
+                log(
+                    f"  PP Base on model：{info['pp_base_on_model_rows']} 筆取代料號顯示；"
+                    f"替換後同名列 {info['pp_base_on_model_duplicate_display_rows']} 筆已保留不合併"
+                )
+            if info.get("pp_source_format") == "flat":
+                log("  PP 來源格式     ：非樞紐工作表")
+                log(f"  PP 樞紐快取     ：無（直接讀取 {info['pp_records']} 筆）")
+                log(
+                    "  PP Plan 篩選    ：未套用"
+                    f"（非樞紐 PP 視為已篩選資料，{info['pp_plan_rows']} 筆料號）"
+                )
+            else:
+                log("  PP 來源格式     ：樞紐分析表")
+                log(f"  PP 樞紐快取     ：{info['pp_cache']}")
+                log(f"  PP Plan 篩選    ：{info['pp_plan']}（{info['pp_plan_rows']} 筆料號）")
             if info["current_week_auto"]:
                 if info["current_week_base_date"] != info["current_date"]:
                     log(

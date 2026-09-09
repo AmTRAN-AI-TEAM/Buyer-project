@@ -40,6 +40,7 @@ from .ctb import (
     BomRow,
     CTB_SHEET,
     CtbPart,
+    DpsPpDemandRow,
     OpenPoRecord,
     Period,
     ShortageRecord,
@@ -50,7 +51,7 @@ from .ctb import (
     build_part_map,
     eta_schedule_for_records,
     filter_ctb_parts,
-    read_dps_pp,
+    read_dps_pp_rows,
     read_over_shortage,
     workbook_has_sheet,
 )
@@ -568,7 +569,7 @@ def _lookup_ctb_child_specs(
 def read_raken_bom_rows(
     reference_path: Path,
     periods: Sequence[Period],
-    demand_by_parent: dict[str, list[float]],
+    demand_source: Mapping[str, Sequence[float]] | Sequence[DpsPpDemandRow],
 ) -> tuple[list[BomRow], dict[str, Any]]:
     mapping_by_part, mapping_by_parent, demand_stats = _read_raken_demand_mapping(reference_path)
     raw_rows = _read_raken_ctb_rows(reference_path)
@@ -645,7 +646,17 @@ def read_raken_bom_rows(
     mapped_demand_links = 0
     missing_demand_parents: list[str] = []
     missing_ctb_parts: list[str] = []
-    for parent, parent_demand in demand_by_parent.items():
+    if isinstance(demand_source, Mapping):
+        demand_entries = tuple(
+            DpsPpDemandRow(source_row=0, parent=parent, demand=list(demand))
+            for parent, demand in demand_source.items()
+        )
+    else:
+        demand_entries = demand_source
+
+    for demand_entry in demand_entries:
+        parent = demand_entry.parent
+        parent_demand = demand_entry.demand
         if not any(parent_demand):
             continue
         active_parent_count += 1
@@ -1466,8 +1477,8 @@ def generate_raken_ctb(
     default_eta_lead_days: int,
     eta_lead_days_by_supplier_site: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    periods, demand_by_parent = read_dps_pp(dps_pp_path)
-    bom_rows, bom_info = read_raken_bom_rows(reference_path, periods, demand_by_parent)
+    periods, demand_rows = read_dps_pp_rows(dps_pp_path)
+    bom_rows, bom_info = read_raken_bom_rows(reference_path, periods, demand_rows)
     bom_part_keys = _raken_bom_part_keys(bom_rows)
     shortage_source = read_over_shortage(shortage_path)
     price_by_part, price_warning = read_raken_erp_price(reference_path)

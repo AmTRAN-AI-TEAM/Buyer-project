@@ -35,14 +35,10 @@ from .dps import (
     read_dps_data,
 )
 from .pp import (
-    build_pp_periods,
     MONTH_FCST_LABEL_RE,
     MONTH_INDEX,
     MONTH_PLAIN_LABEL_RE,
-    normalize_field,
-    parse_pivot_cache,
-    read_layout,
-    select_pp_pivot_source,
+    read_pp_data,
 )
 
 DPS_PP_TIDY_SHEET = "DPS+PP"
@@ -164,89 +160,15 @@ def read_pp_plan_data(
     sheet_keywords: Sequence[str],
     part_number_keywords: Sequence[str],
 ) -> dict:
-    pivot_source = select_pp_pivot_source(
+    return read_pp_data(
         pp_path,
+        plan=plan,
+        start_week=start_week,
+        base_year=base_year,
+        report_date=report_date,
         sheet_keywords=sheet_keywords,
         part_number_keywords=part_number_keywords,
     )
-    cache = parse_pivot_cache(
-        pp_path,
-        definition_part=pivot_source["cache_definition"],
-        part_number_keywords=part_number_keywords,
-    )
-    fields = cache["fields"]
-    records = cache["records"]
-
-    field_index = {normalize_field(name): idx for idx, name in enumerate(fields)}
-    part_number_field = cache["part_number_field"]
-    required = ["Customer", "Model", "Plan"]
-    missing = [name for name in required if name not in field_index]
-    if missing:
-        raise SystemExit(f"樞紐快取缺少必要欄位：{', '.join(missing)}")
-    if part_number_field not in field_index:
-        raise SystemExit(f"樞紐快取找不到選定的料號欄位：{part_number_field}")
-
-    if report_date is None:
-        report_date = cache["refreshed_date"] or dt.date.today()
-    if base_year is None:
-        base_year = f"{report_date.year % 100:02d}"
-    if start_week is None:
-        start_week = max(1, report_date.isocalendar()[1] - 1)
-
-    layout = read_layout(pp_path, sheet_name=pivot_source["sheet_name"])
-    periods = build_pp_periods(fields, layout.labels, base_year, start_week)
-    if not periods:
-        raise SystemExit("推導不出任何 PP 期間欄位")
-
-    customer_idx = field_index["Customer"]
-    model_idx = field_index["Model"]
-    pn_idx = field_index[part_number_field]
-    plan_idx = field_index["Plan"]
-
-    plans_seen = {r[plan_idx].strip() for r in records if len(r) > plan_idx}
-    if plan not in plans_seen:
-        raise SystemExit(
-            f"快取中沒有 Plan = {plan!r}；可選值：{', '.join(sorted(plans_seen))}"
-        )
-
-    aggregate: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    metadata: dict[str, tuple[str, str]] = {}
-    source_order: list[str] = []
-    plan_rows = 0
-    for record in records:
-        if len(record) <= max(customer_idx, model_idx, pn_idx, plan_idx):
-            continue
-        if record[plan_idx].strip() != plan:
-            continue
-        pn = normalize_part_number(record[pn_idx])
-        if not pn:
-            continue
-        plan_rows += 1
-        if pn not in metadata:
-            metadata[pn] = (record[customer_idx].strip(), record[model_idx].strip())
-            source_order.append(pn)
-        for label, source_indexes in periods:
-            aggregate[pn][label] += sum(
-                numeric(record[i]) for i in source_indexes if i < len(record)
-            )
-
-    return {
-        "source": pp_path,
-        "layout_sheet": pivot_source["sheet_name"],
-        "cache_part": cache["definition_part"],
-        "part_number_field": part_number_field,
-        "refreshed_date": cache["refreshed_date"],
-        "refreshed_by": cache["refreshed_by"],
-        "records": len(records),
-        "plan": plan,
-        "plan_rows": plan_rows,
-        "base_year": base_year,
-        "start_week": start_week,
-        "periods": [label for label, _source_indexes in periods],
-        "aggregate": aggregate,
-        "metadata": metadata,
-        "source_order": source_order,
-    }
 
 
 def build_dps_buckets(
@@ -301,6 +223,17 @@ def select_pp_periods(pp_data: dict, cutoff_end: dt.date) -> list[dict]:
     return selected
 
 
+def duplicate_display_rows(rows: Sequence[list]) -> int:
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if not row:
+            continue
+        part = normalize_part_number(row[0])
+        if part:
+            counts[part.casefold()] += 1
+    return sum(count - 1 for count in counts.values() if count > 1)
+
+
 def read_bom_map(paths: Sequence[Path]) -> tuple[dict[str, str], bool]:
     bom = {}
     found = False
@@ -334,41 +267,78 @@ def build_output_rows(
     pp_periods: Sequence[dict],
     bom: dict[str, str],
 ) -> list[list]:
-    seen = set()
-    ordered_parts = []
+    pp_source_part_by_key = pp_data.get("source_part_by_key", {})
+    pp_display_part_by_key = pp_data.get("display_part_by_key", {})
+    pp_keys_by_source_part: dict[str, list[str]] = defaultdict(list)
+    for key in pp_data["source_order"]:
+        pp_keys_by_source_part[pp_source_part_by_key.get(key, key)].append(key)
 
-    def has_values(part: str) -> bool:
-        return any(dps_values[part].get(date, 0) for date in dps_dates) or any(
-            pp_data["aggregate"][part].get(period["label"], 0) for period in pp_periods
+    def pp_source_part(key: str) -> str:
+        return pp_source_part_by_key.get(key, key)
+
+    def pp_display_part(key: str) -> str:
+        return pp_display_part_by_key.get(key, key)
+
+    def dps_part_for_pp_key(key: str) -> str:
+        source_part = pp_source_part(key)
+        if len(pp_keys_by_source_part[source_part]) == 1:
+            return source_part
+        return key
+
+    def has_dps_values(part: str) -> bool:
+        return any(dps_values[part].get(date, 0) for date in dps_dates)
+
+    def has_pp_values(key: str) -> bool:
+        return any(
+            pp_data["aggregate"][key].get(period["label"], 0)
+            for period in pp_periods
         )
 
-    for pn in pp_data["source_order"]:
-        if pn in seen or not has_values(pn):
+    def has_pp_row_values(key: str) -> bool:
+        return has_dps_values(dps_part_for_pp_key(key)) or has_pp_values(key)
+
+    seen_pp_keys = set()
+    consumed_dps_parts = set()
+    ordered_rows: list[tuple[str, str]] = []
+
+    for key in pp_data["source_order"]:
+        if key in seen_pp_keys or not has_pp_row_values(key):
             continue
-        seen.add(pn)
-        ordered_parts.append(pn)
+        seen_pp_keys.add(key)
+        consumed_dps_parts.add(dps_part_for_pp_key(key))
+        ordered_rows.append(("pp", key))
 
     dps_only = [
         pn for pn in dps_data["label_is_numeric"]
-        if pn not in seen and has_values(pn)
+        if pn not in consumed_dps_parts and has_dps_values(pn)
     ]
     dps_only.sort(
         key=lambda pn: excel_label_sort_key(pn, dps_data["label_is_numeric"].get(pn, False))
     )
-    ordered_parts.extend(dps_only)
+    ordered_rows.extend(("dps", pn) for pn in dps_only)
 
     rows = []
-    for pn in ordered_parts:
+    for row_type, key in ordered_rows:
+        if row_type == "pp":
+            dps_part = dps_part_for_pp_key(key)
+            display_part = pp_display_part(key)
+            pp_values = [
+                clean_number(pp_data["aggregate"][key].get(period["label"], 0))
+                for period in pp_periods
+            ]
+            bom_part = pp_source_part(key)
+        else:
+            dps_part = key
+            display_part = key
+            pp_values = [0 for _period in pp_periods]
+            bom_part = key
         period_values = [
-            clean_number(dps_values[pn].get(date, 0))
+            clean_number(dps_values[dps_part].get(date, 0))
             for date in dps_dates
         ]
-        period_values.extend(
-            clean_number(pp_data["aggregate"][pn].get(period["label"], 0))
-            for period in pp_periods
-        )
+        period_values.extend(pp_values)
         total = clean_number(sum(numeric(value) for value in period_values))
-        rows.append([pn, *period_values, total, bom.get(pn, "")])
+        rows.append([display_part, *period_values, total, bom.get(bom_part, "")])
     return rows
 
 
@@ -540,7 +510,15 @@ def generate_dps_pp(
         "pp_source": pp_path,
         "pp_sheet": pp_data["layout_sheet"],
         "pp_cache": pp_data["cache_part"],
+        "pp_source_format": pp_data["source_format"],
         "pp_part_number_field": pp_data["part_number_field"],
+        "pp_plan": pp_data["plan"],
+        "pp_plan_filter_applied": pp_data["plan_filter_applied"],
+        "pp_plan_rows": pp_data["plan_rows"],
+        "pp_records": pp_data["records"],
+        "pp_base_on_model_field": pp_data.get("base_on_model_field", ""),
+        "pp_base_on_model_rows": pp_data.get("base_on_model_rows", 0),
+        "pp_base_on_model_duplicate_display_rows": duplicate_display_rows(rows),
         "current_date": current_date,
         "current_week_base_date": current_week_base_date,
         "current_week_auto": current_week_auto,

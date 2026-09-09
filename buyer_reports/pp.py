@@ -50,6 +50,9 @@ MONTH_ABBR = [
 MONTH_INDEX = {name.lower(): i for i, name in enumerate(MONTH_ABBR, start=1)}
 PP_SOURCE_SHEET_KEYWORDS = DEFAULT_PP_SHEET_KEYWORDS
 PP_PART_NUMBER_FIELD_KEYWORDS = DEFAULT_PP_PART_NUMBER_FIELD_KEYWORDS
+PP_SOURCE_FORMAT_PIVOT = "pivot"
+PP_SOURCE_FORMAT_FLAT = "flat"
+FLAT_PP_ROW_KEY_PREFIX = "\x1fflat-pp-row:"
 
 
 @dataclass(frozen=True)
@@ -393,6 +396,7 @@ CACHE_WEEK_MONTH_YEAR_RE = re.compile(
     re.IGNORECASE,
 )
 CACHE_MONTH_RE = re.compile(r"^([A-Za-z]{3})\s*(?:'|-)\s*(\d{2})\s*(?:FCST)?$", re.IGNORECASE)
+FILENAME_DATE_RE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
 
 
 def normalize_field(name: str) -> str:
@@ -647,15 +651,298 @@ def read_layout(pp_path: Path, sheet_name: str | None = None) -> LayoutInfo:
         wb.close()
 
 
-def generate_pp(
+def _infer_report_date_from_filename(path: Path) -> dt.date | None:
+    for match in FILENAME_DATE_RE.finditer(path.stem):
+        raw = match.group(1)
+        candidates: list[tuple[int, int, int]] = []
+        if raw.startswith("20"):
+            candidates.append((int(raw[:4]), int(raw[4:6]), int(raw[6:])))
+        if raw[4:].startswith("20"):
+            candidates.append((int(raw[4:]), int(raw[:2]), int(raw[2:4])))
+        for year, month, day in candidates:
+            try:
+                return dt.date(year, month, day)
+            except ValueError:
+                continue
+    return None
+
+
+def _first_week_label(labels: Sequence[str]) -> int | None:
+    for label in labels:
+        match = WEEK_LABEL_RE.match(str(label).strip())
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _flat_period_label(value) -> str | None:
+    if value is None:
+        return None
+    text = normalize_field(str(value))
+    if not text:
+        return None
+    if TOTAL_LABEL_RE.search(text) and not WEEK_LABEL_RE.match(text):
+        return None
+    return output_label_for_layout_period(text)
+
+
+def _header_field_index(headers: Sequence[str], field_name: str) -> int | None:
+    wanted = normalize_label(field_name)
+    for index, header in enumerate(headers):
+        if normalize_label(header) == wanted:
+            return index
+    return None
+
+
+def _part_number_header_index(
+    headers: Sequence[str],
+    part_number_keywords: Sequence[str],
+) -> tuple[int | None, str | None]:
+    part_number_field = select_part_number_field(headers, part_number_keywords)
+    if part_number_field is None:
+        return None, None
+    for index, header in enumerate(headers):
+        if normalize_field(header) == part_number_field:
+            return index, part_number_field
+    return None, part_number_field
+
+
+def _flat_header_info(ws, part_number_keywords: Sequence[str]) -> dict | None:
+    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 40)):
+        headers = [
+            normalize_field("" if cell.value is None else str(cell.value))
+            for cell in row
+        ]
+        customer_idx = _header_field_index(headers, "Customer")
+        model_idx = _header_field_index(headers, "Model")
+        pn_idx, part_number_field = _part_number_header_index(headers, part_number_keywords)
+        if customer_idx is None or model_idx is None or pn_idx is None:
+            continue
+
+        period_indexes: "OrderedDict[str, list[int]]" = OrderedDict()
+        for index, header in enumerate(headers):
+            label = _flat_period_label(header)
+            if label is None:
+                continue
+            period_indexes.setdefault(label, []).append(index)
+        if len(period_indexes) < 2:
+            continue
+        return {
+            "header_row": row[0].row,
+            "headers": headers,
+            "customer_idx": customer_idx,
+            "model_idx": model_idx,
+            "pn_idx": pn_idx,
+            "base_on_model_idx": _header_field_index(headers, "Base on model"),
+            "part_number_field": part_number_field or headers[pn_idx],
+            "period_indexes": period_indexes,
+        }
+    return None
+
+
+def _flat_pp_row_key(sheet_name: str, row_number: int, part_number: str) -> str:
+    return f"{FLAT_PP_ROW_KEY_PREFIX}{sheet_name}:{row_number}:{part_number}"
+
+
+def _duplicate_display_rows(
+    keys: Sequence[str],
+    display_part_by_key: dict[str, str],
+) -> int:
+    counts: dict[str, int] = defaultdict(int)
+    for key in keys:
+        display_key = normalize_label(display_part_by_key.get(key, key))
+        if display_key:
+            counts[display_key] += 1
+    return sum(count - 1 for count in counts.values() if count > 1)
+
+
+def _flat_sheet_candidates(wb, sheet_keywords: Sequence[str]):
+    matched = [
+        ws for ws in wb.worksheets
+        if sheet_name_matches_keywords(ws.title, sheet_keywords)
+    ]
+    if matched:
+        return matched, True
+    return list(wb.worksheets[:1]), False
+
+
+def _read_flat_pp_data(
     pp_path: Path,
-    output_path: Path,
-    plan: str = "Production Input",
-    start_week: int | None = None,
-    base_year: str | None = None,
-    report_date: dt.date | None = None,
-    sheet_keywords: Sequence[str] = PP_SOURCE_SHEET_KEYWORDS,
-    part_number_keywords: Sequence[str] = PP_PART_NUMBER_FIELD_KEYWORDS,
+    plan: str,
+    start_week: int | None,
+    base_year: str | None,
+    report_date: dt.date | None,
+    sheet_keywords: Sequence[str],
+    part_number_keywords: Sequence[str],
+) -> dict:
+    keyword_text = keyword_label(sheet_keywords)
+    wb = load_workbook(pp_path, data_only=True)
+    try:
+        candidates, used_keyword_match = _flat_sheet_candidates(wb, sheet_keywords)
+        if not candidates:
+            raise SystemExit(f"{pp_path.name} 沒有可讀取的工作表。")
+
+        selected_ws = None
+        header_info = None
+        for ws in candidates:
+            info = _flat_header_info(ws, part_number_keywords)
+            if info is not None:
+                selected_ws = ws
+                header_info = info
+                break
+        if selected_ws is None or header_info is None:
+            names = ", ".join(ws.title for ws in candidates)
+            if used_keyword_match:
+                raise SystemExit(
+                    f"{pp_path.name} 找到名稱包含 {keyword_text} 的工作表"
+                    f"（{names}），但找不到 Customer / Model / "
+                    f"{keyword_label(part_number_keywords)} / 期間欄表頭。"
+                )
+            raise SystemExit(
+                f"{pp_path.name} 的第一張工作表 {names!r} 找不到 Customer / Model / "
+                f"{keyword_label(part_number_keywords)} / 期間欄表頭。"
+            )
+
+        labels = list(header_info["period_indexes"])
+        if report_date is None:
+            report_date = _infer_report_date_from_filename(pp_path) or dt.date.today()
+        if base_year is None:
+            base_year = f"{report_date.year % 100:02d}"
+        if start_week is None:
+            start_week = _first_week_label(labels) or max(1, report_date.isocalendar()[1] - 1)
+
+        total_periods = total_period_labels([(label, []) for label in labels], start_week)
+        if not total_periods:
+            raise SystemExit("推導不出 PP total 的加總期間欄位")
+        total_start_label = total_periods[0]
+
+        hidden_output_periods = []
+        for label, source_indexes in header_info["period_indexes"].items():
+            if label not in labels:
+                continue
+            if any(
+                selected_ws.column_dimensions[get_column_letter(index + 1)].hidden
+                for index in source_indexes
+            ):
+                hidden_output_periods.append(label)
+
+        aggregate: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        metadata: dict[str, tuple[str, str]] = {}
+        source_part_by_key: dict[str, str] = {}
+        display_part_by_key: dict[str, str] = {}
+        source_order: list[str] = []
+        layout_customers: list[str] = []
+        plan_rows = 0
+        base_on_model_rows = 0
+        display_counts: dict[str, int] = defaultdict(int)
+
+        for row_number, row in enumerate(
+            selected_ws.iter_rows(
+                min_row=header_info["header_row"] + 1,
+                values_only=True,
+            ),
+            start=header_info["header_row"] + 1,
+        ):
+            pn_idx = header_info["pn_idx"]
+            if len(row) <= pn_idx:
+                continue
+            pn = normalize_part_number(row[pn_idx])
+            if not pn:
+                continue
+            plan_rows += 1
+            base_on_model_idx = header_info["base_on_model_idx"]
+            base_on_model = (
+                ""
+                if base_on_model_idx is None or len(row) <= base_on_model_idx
+                else normalize_part_number(row[base_on_model_idx])
+            )
+            display_part = base_on_model or pn
+            data_key = (
+                _flat_pp_row_key(selected_ws.title, row_number, pn)
+                if base_on_model
+                else pn
+            )
+            if base_on_model:
+                base_on_model_rows += 1
+            display_key = normalize_label(display_part)
+            if display_key:
+                display_counts[display_key] += 1
+            customer_idx = header_info["customer_idx"]
+            model_idx = header_info["model_idx"]
+            customer = (
+                ""
+                if len(row) <= customer_idx or row[customer_idx] is None
+                else str(row[customer_idx]).strip()
+            )
+            model = (
+                ""
+                if len(row) <= model_idx or row[model_idx] is None
+                else str(row[model_idx]).strip()
+            )
+            if data_key not in metadata:
+                metadata[data_key] = (customer, model)
+                source_part_by_key[data_key] = pn
+                display_part_by_key[data_key] = display_part
+                source_order.append(data_key)
+            if customer and customer not in layout_customers:
+                layout_customers.append(customer)
+            for label, source_indexes in header_info["period_indexes"].items():
+                aggregate[data_key][label] += sum(
+                    numeric(row[index] if index < len(row) else None)
+                    for index in source_indexes
+                )
+
+        base_on_model_duplicate_display_rows = sum(
+            count - 1 for count in display_counts.values() if count > 1
+        )
+        return {
+            "source": pp_path,
+            "source_format": PP_SOURCE_FORMAT_FLAT,
+            "layout_sheet": selected_ws.title,
+            "pivot_table": "",
+            "cache_id": "",
+            "cache_part": "無（非樞紐表）",
+            "cache_source_sheet": selected_ws.title,
+            "part_number_field": header_info["part_number_field"],
+            "refreshed_date": None,
+            "refreshed_by": "",
+            "records": plan_rows,
+            "plan": plan,
+            "plan_filter_applied": False,
+            "plan_rows": plan_rows,
+            "base_year": base_year,
+            "start_week": start_week,
+            "report_date": report_date,
+            "layout_found": True,
+            "layout_customers": layout_customers,
+            "historical_cache_periods": [],
+            "hidden_source_periods": hidden_output_periods,
+            "total_periods": total_periods,
+            "total_start_label": total_start_label,
+            "periods": labels,
+            "aggregate": aggregate,
+            "metadata": metadata,
+            "source_part_by_key": source_part_by_key,
+            "display_part_by_key": display_part_by_key,
+            "source_order": source_order,
+            "base_on_model_field": "Base on model"
+            if header_info["base_on_model_idx"] is not None
+            else "",
+            "base_on_model_rows": base_on_model_rows,
+            "base_on_model_duplicate_display_rows": base_on_model_duplicate_display_rows,
+        }
+    finally:
+        wb.close()
+
+
+def _read_pivot_pp_data(
+    pp_path: Path,
+    plan: str,
+    start_week: int | None,
+    base_year: str | None,
+    report_date: dt.date | None,
+    sheet_keywords: Sequence[str],
+    part_number_keywords: Sequence[str],
 ) -> dict:
     pivot_source = select_pp_pivot_source(
         pp_path,
@@ -679,28 +966,27 @@ def generate_pp(
     if part_number_field not in field_index:
         raise SystemExit(f"樞紐快取找不到選定的料號欄位：{part_number_field}")
 
-    customer_idx = field_index["Customer"]
-    model_idx = field_index["Model"]
-    pn_idx = field_index[part_number_field]
-    plan_idx = field_index["Plan"]
-
     if report_date is None:
         report_date = cache["refreshed_date"] or dt.date.today()
     if base_year is None:
         base_year = f"{report_date.year % 100:02d}"
     if start_week is None:
-        # 取報表日所在週的前一週開始（與人工整理慣例一致：保留上一週作參照）
         start_week = max(1, report_date.isocalendar()[1] - 1)
 
     layout = read_layout(pp_path, sheet_name=pivot_source["sheet_name"])
     periods = build_pp_periods(fields, layout.labels, base_year, start_week)
     if not periods:
-        raise SystemExit("推導不出任何輸出期間欄位")
+        raise SystemExit("推導不出任何 PP 期間欄位")
     historical_cache_periods = historical_cache_period_labels(periods, start_week)
     total_periods = total_period_labels(periods, start_week)
     if not total_periods:
         raise SystemExit("推導不出 PP total 的加總期間欄位")
     total_start_label = total_periods[0]
+
+    customer_idx = field_index["Customer"]
+    model_idx = field_index["Model"]
+    pn_idx = field_index[part_number_field]
+    plan_idx = field_index["Plan"]
 
     plans_seen = {r[plan_idx].strip() for r in records if len(r) > plan_idx}
     if plan not in plans_seen:
@@ -712,7 +998,6 @@ def generate_pp(
     metadata: dict[str, tuple[str, str]] = {}
     source_order: list[str] = []
     plan_rows = 0
-
     for record in records:
         if len(record) <= max(customer_idx, model_idx, pn_idx, plan_idx):
             continue
@@ -730,13 +1015,6 @@ def generate_pp(
                 numeric(record[i]) for i in source_indexes if i < len(record)
             )
 
-    labels = [label for label, _ in periods]
-    kept = [pn for pn in source_order if any(aggregate[pn][label] for label in labels)]
-
-    rank = {name: i for i, name in enumerate(layout.customers)}
-    fallback = len(rank)
-    kept.sort(key=lambda pn: (rank.get(metadata[pn][0], fallback), metadata[pn][0], pn))
-
     output_labels = {label for label, _source_indexes in periods}
     hidden_output_periods = []
     for source_label in layout.hidden_labels:
@@ -744,30 +1022,9 @@ def generate_pp(
         if output_label in output_labels and output_label not in hidden_output_periods:
             hidden_output_periods.append(output_label)
 
-    rows = []
-    for pn in kept:
-        customer, model = metadata[pn]
-        rows.append(
-            [customer, pn, model]
-            + [clean_number(aggregate[pn][label]) for label in labels]
-        )
-
-    total_period_set = set(total_periods)
-    write_pp_workbook(
-        output_path,
-        labels,
-        rows,
-        part_number_header=part_number_field,
-        template_path=pp_path,
-        total_label_indexes=[
-            index for index, label in enumerate(labels)
-            if label in total_period_set
-        ],
-        total_start_label=total_start_label,
-    )
-
     return {
         "source": pp_path,
+        "source_format": PP_SOURCE_FORMAT_PIVOT,
         "layout_sheet": pivot_source["sheet_name"],
         "pivot_table": pivot_source["pivot_table"],
         "cache_id": pivot_source["cache_id"],
@@ -778,18 +1035,139 @@ def generate_pp(
         "refreshed_by": cache["refreshed_by"],
         "records": len(records),
         "plan": plan,
+        "plan_filter_applied": True,
         "plan_rows": plan_rows,
         "base_year": base_year,
         "start_week": start_week,
         "report_date": report_date,
         "layout_found": layout.labels is not None,
+        "layout_customers": layout.customers,
         "historical_cache_periods": historical_cache_periods,
         "hidden_source_periods": hidden_output_periods,
         "total_periods": total_periods,
         "total_start_label": total_start_label,
-        "periods": labels,
+        "periods": [label for label, _source_indexes in periods],
+        "aggregate": aggregate,
+        "metadata": metadata,
+        "source_order": source_order,
+        "source_part_by_key": {pn: pn for pn in source_order},
+        "display_part_by_key": {pn: pn for pn in source_order},
+        "base_on_model_field": "",
+        "base_on_model_rows": 0,
+        "base_on_model_duplicate_display_rows": 0,
+    }
+
+
+def read_pp_data(
+    pp_path: Path,
+    plan: str = "Production Input",
+    start_week: int | None = None,
+    base_year: str | None = None,
+    report_date: dt.date | None = None,
+    sheet_keywords: Sequence[str] = PP_SOURCE_SHEET_KEYWORDS,
+    part_number_keywords: Sequence[str] = PP_PART_NUMBER_FIELD_KEYWORDS,
+) -> dict:
+    try:
+        return _read_pivot_pp_data(
+            pp_path,
+            plan=plan,
+            start_week=start_week,
+            base_year=base_year,
+            report_date=report_date,
+            sheet_keywords=sheet_keywords,
+            part_number_keywords=part_number_keywords,
+        )
+    except SystemExit as pivot_exc:
+        try:
+            return _read_flat_pp_data(
+                pp_path,
+                plan=plan,
+                start_week=start_week,
+                base_year=base_year,
+                report_date=report_date,
+                sheet_keywords=sheet_keywords,
+                part_number_keywords=part_number_keywords,
+            )
+        except SystemExit as flat_exc:
+            raise SystemExit(
+                f"{pivot_exc}；也無法以非樞紐 PP 工作表讀取：{flat_exc}"
+            ) from flat_exc
+
+
+def generate_pp(
+    pp_path: Path,
+    output_path: Path,
+    plan: str = "Production Input",
+    start_week: int | None = None,
+    base_year: str | None = None,
+    report_date: dt.date | None = None,
+    sheet_keywords: Sequence[str] = PP_SOURCE_SHEET_KEYWORDS,
+    part_number_keywords: Sequence[str] = PP_PART_NUMBER_FIELD_KEYWORDS,
+) -> dict:
+    pp_data = read_pp_data(
+        pp_path,
+        plan=plan,
+        start_week=start_week,
+        base_year=base_year,
+        report_date=report_date,
+        sheet_keywords=sheet_keywords,
+        part_number_keywords=part_number_keywords,
+    )
+    aggregate = pp_data["aggregate"]
+    metadata = pp_data["metadata"]
+    display_part_by_key = pp_data.get("display_part_by_key", {})
+    source_part_by_key = pp_data.get("source_part_by_key", {})
+    labels = pp_data["periods"]
+    total_periods = pp_data["total_periods"]
+    source_order = pp_data["source_order"]
+    kept = [pn for pn in source_order if any(aggregate[pn][label] for label in labels)]
+
+    rank = {name: i for i, name in enumerate(pp_data["layout_customers"])}
+    fallback = len(rank)
+    kept.sort(
+        key=lambda pn: (
+            rank.get(metadata[pn][0], fallback),
+            metadata[pn][0],
+            source_part_by_key.get(pn, pn),
+            display_part_by_key.get(pn, pn),
+            pn,
+        )
+    )
+
+    rows = []
+    for pn in kept:
+        customer, model = metadata[pn]
+        rows.append(
+            [customer, display_part_by_key.get(pn, pn), model]
+            + [clean_number(aggregate[pn][label]) for label in labels]
+        )
+
+    total_period_set = set(total_periods)
+    write_pp_workbook(
+        output_path,
+        labels,
+        rows,
+        part_number_header=pp_data["part_number_field"],
+        template_path=pp_path,
+        total_label_indexes=[
+            index for index, label in enumerate(labels)
+            if label in total_period_set
+        ],
+        total_start_label=pp_data["total_start_label"],
+    )
+
+    return {
+        **{
+            key: value
+            for key, value in pp_data.items()
+            if key not in {"aggregate", "metadata", "source_order", "layout_customers"}
+        },
         "rows": len(rows),
         "dropped_zero": len(metadata) - len(kept),
+        "base_on_model_duplicate_display_rows": _duplicate_display_rows(
+            kept,
+            display_part_by_key,
+        ),
         "grand_total": clean_number(
             sum(
                 sum(aggregate[pn][label] for label in total_periods)
