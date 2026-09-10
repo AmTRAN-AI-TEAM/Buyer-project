@@ -508,6 +508,7 @@ def _show_ctb_eta_settings_dialog(
 ) -> dict | None:
     try:
         import tkinter as tk
+        from tkinter import font as tkfont
         from tkinter import messagebox, ttk
     except Exception as exc:  # pragma: no cover - depends on Windows runtime
         warn(f"無法開啟 CTB ETA 設定視窗，將沿用目前設定。原因：{exc}")
@@ -569,6 +570,17 @@ def _show_ctb_eta_settings_dialog(
     sort_state = {"column": "status", "reverse": False}
     selection_anchor = {"key": None}
     active_editor = {"widget": None, "key": None, "field": None, "committing": False}
+    supplier_hover = {
+        "item_id": None,
+        "key": None,
+        "text": "",
+        "offset": 0,
+        "marquee_job": None,
+        "marquee_enabled": False,
+        "tooltip_job": None,
+        "tooltip": None,
+        "pointer": (0, 0),
+    }
 
     title_prefix = f"{customer_label} " if customer_label else ""
     root.title(f"{title_prefix}CTB ETA Supplier site 設定")
@@ -705,6 +717,10 @@ def _show_ctb_eta_settings_dialog(
 
     row_iids: dict[str, str] = {}
 
+    def supplier_cell_value(key: str) -> str:
+        supplier = entries[key]["supplier"]
+        return f" {supplier}" if supplier else ""
+
     def parse_days(raw_value: str, label: str) -> int | None:
         try:
             days = int(raw_value.strip())
@@ -777,7 +793,178 @@ def _show_ctb_eta_settings_dialog(
             if item_id in row_iids
         }
 
+    def tree_text_font():
+        font_spec = style.lookup("Eta.Treeview", "font") or "TkDefaultFont"
+        try:
+            return tkfont.nametofont(font_spec)
+        except tk.TclError:
+            return tkfont.Font(root=root, font=font_spec)
+
+    def supplier_text_overflows(text: str, cell_width: int) -> bool:
+        if not text or cell_width <= 0:
+            return False
+        return tree_text_font().measure(f" {text}") > max(cell_width - 8, 1)
+
+    def restore_supplier_cell() -> None:
+        item_id = supplier_hover["item_id"]
+        key = supplier_hover["key"]
+        if item_id and key and tree.exists(item_id) and row_iids.get(item_id) == key:
+            tree.set(item_id, "supplier", supplier_cell_value(key))
+
+    def hide_supplier_tooltip() -> None:
+        tooltip_job = supplier_hover["tooltip_job"]
+        if tooltip_job is not None:
+            try:
+                root.after_cancel(tooltip_job)
+            except tk.TclError:
+                pass
+        supplier_hover["tooltip_job"] = None
+        tooltip = supplier_hover["tooltip"]
+        if tooltip is not None:
+            try:
+                tooltip.destroy()
+            except tk.TclError:
+                pass
+        supplier_hover["tooltip"] = None
+
+    def hide_supplier_hover(_event=None) -> None:
+        marquee_job = supplier_hover["marquee_job"]
+        if marquee_job is not None:
+            try:
+                root.after_cancel(marquee_job)
+            except tk.TclError:
+                pass
+        supplier_hover["marquee_job"] = None
+        hide_supplier_tooltip()
+        restore_supplier_cell()
+        supplier_hover["item_id"] = None
+        supplier_hover["key"] = None
+        supplier_hover["text"] = ""
+        supplier_hover["offset"] = 0
+        supplier_hover["marquee_enabled"] = False
+
+    def position_supplier_tooltip() -> None:
+        tooltip = supplier_hover["tooltip"]
+        if tooltip is None:
+            return
+        pointer_x, pointer_y = supplier_hover["pointer"]
+        tooltip.geometry(f"+{pointer_x + 14}+{pointer_y + 18}")
+
+    def show_supplier_tooltip() -> None:
+        supplier_hover["tooltip_job"] = None
+        if not supplier_hover["text"] or supplier_hover["item_id"] is None:
+            return
+        tooltip = tk.Toplevel(root)
+        tooltip.withdraw()
+        tooltip.overrideredirect(True)
+        tooltip.attributes("-topmost", True)
+        label = tk.Label(
+            tooltip,
+            text=supplier_hover["text"],
+            justify="left",
+            background="#fff7cc",
+            foreground="#000000",
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=5,
+            wraplength=620,
+        )
+        label.pack()
+        supplier_hover["tooltip"] = tooltip
+        position_supplier_tooltip()
+        tooltip.deiconify()
+
+    def schedule_supplier_tooltip(event) -> None:
+        supplier_hover["pointer"] = (event.x_root, event.y_root)
+        if supplier_hover["tooltip"] is not None:
+            position_supplier_tooltip()
+            return
+        tooltip_job = supplier_hover["tooltip_job"]
+        if tooltip_job is not None:
+            root.after_cancel(tooltip_job)
+        supplier_hover["tooltip_job"] = root.after(350, show_supplier_tooltip)
+
+    def step_supplier_marquee() -> None:
+        item_id = supplier_hover["item_id"]
+        key = supplier_hover["key"]
+        text = supplier_hover["text"]
+        if (
+            not supplier_hover["marquee_enabled"]
+            or not item_id
+            or not key
+            or not text
+            or not tree.exists(item_id)
+            or row_iids.get(item_id) != key
+        ):
+            hide_supplier_hover()
+            return
+
+        cycle_text = f"{text}     "
+        offset = supplier_hover["offset"] % len(cycle_text)
+        rotated = cycle_text[offset:] + cycle_text[:offset]
+        tree.set(item_id, "supplier", f" {rotated}")
+        supplier_hover["offset"] = (offset + 1) % len(cycle_text)
+        supplier_hover["marquee_job"] = root.after(150, step_supplier_marquee)
+
+    def start_supplier_hover(
+        item_id: str,
+        key: str,
+        text: str,
+        event,
+        *,
+        marquee_enabled: bool,
+    ) -> None:
+        hide_supplier_hover()
+        supplier_hover["item_id"] = item_id
+        supplier_hover["key"] = key
+        supplier_hover["text"] = text
+        supplier_hover["offset"] = 0
+        supplier_hover["marquee_enabled"] = marquee_enabled
+        schedule_supplier_tooltip(event)
+        if marquee_enabled:
+            step_supplier_marquee()
+
+    def on_supplier_motion(event) -> None:
+        if active_editor["widget"] is not None:
+            hide_supplier_hover()
+            return
+
+        item_id = tree.identify_row(event.y)
+        column_id = tree.identify_column(event.x)
+        if column_id != "#1" or item_id not in row_iids:
+            hide_supplier_hover()
+            return
+
+        bbox = tree.bbox(item_id, column_id)
+        if not bbox:
+            hide_supplier_hover()
+            return
+        _x, _y, width, _height = bbox
+        key = row_iids[item_id]
+        text = entries[key]["supplier"].strip()
+        if not text:
+            hide_supplier_hover()
+            return
+        marquee_enabled = supplier_text_overflows(text, width)
+
+        if (
+            supplier_hover["item_id"] != item_id
+            or supplier_hover["key"] != key
+            or supplier_hover["marquee_enabled"] != marquee_enabled
+        ):
+            start_supplier_hover(
+                item_id,
+                key,
+                text,
+                event,
+                marquee_enabled=marquee_enabled,
+            )
+            return
+        schedule_supplier_tooltip(event)
+
     def refresh_tree() -> None:
+        hide_supplier_hover()
         preserved_keys = selected_keys()
         visible_keys = filtered_keys()
         for widget in (tree, status_tree):
@@ -795,7 +982,7 @@ def _show_ctb_eta_settings_dialog(
                 "end",
                 iid=item_id,
                 values=(
-                    f" {entry['supplier']}" if entry["supplier"] else "",
+                    supplier_cell_value(key),
                     "|",
                     f" {site_value}" if site_value else "",
                     "|",
@@ -878,6 +1065,7 @@ def _show_ctb_eta_settings_dialog(
             down_button.grid(row=0, column=3, padx=(0, 2), pady=1)
 
     def toggle_site_column() -> None:
+        hide_supplier_hover()
         close_inline_editor()
         if site_column_state["hidden"]:
             restored_supplier_width = site_column_state["supplier_width"]
@@ -1019,11 +1207,13 @@ def _show_ctb_eta_settings_dialog(
         return "break"
 
     def record_tree_click(event) -> None:
+        hide_supplier_hover()
         item_id = tree.identify_row(event.y)
         if item_id and not (event.state & 0x0001 or event.state & 0x0004):
             selection_anchor["key"] = row_iids[item_id]
 
     def on_status_click(event) -> str:
+        hide_supplier_hover()
         item_id = status_tree.identify_row(event.y)
         if item_id not in row_iids:
             return "break"
@@ -1060,6 +1250,7 @@ def _show_ctb_eta_settings_dialog(
         return "break"
 
     def on_tree_mousewheel(event) -> str:
+        hide_supplier_hover()
         delta = getattr(event, "delta", 0)
         if delta:
             amount = -1 if delta > 0 else 1
@@ -1120,6 +1311,7 @@ def _show_ctb_eta_settings_dialog(
         return "break"
 
     def start_inline_editor(event) -> None:
+        hide_supplier_hover()
         item_id = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
         editable_fields = {"#5": "note", "#7": "days"}
@@ -1237,6 +1429,8 @@ def _show_ctb_eta_settings_dialog(
         search_var.trace_add("write", lambda *_args: refresh_tree())
     tree.bind("<Button-1>", record_tree_click, add="+")
     tree.bind("<Double-1>", start_inline_editor)
+    tree.bind("<Motion>", on_supplier_motion, add="+")
+    tree.bind("<Leave>", hide_supplier_hover, add="+")
     tree.bind("<Control-a>", select_all)
     tree.bind("<Control-A>", select_all)
     status_tree.bind("<Button-1>", on_status_click)
