@@ -178,6 +178,7 @@ def build_dps_buckets(
 ) -> tuple[list[dt.date], dict, float]:
     values: dict[str, dict[dt.date, float]] = defaultdict(lambda: defaultdict(float))
     out_dates = {date for date in data["all_dates"] if date <= cutoff_end}
+    out_dates.add(cutoff_end)
     late_total = 0.0
 
     for pn, by_date in data["aggregate"].items():
@@ -198,10 +199,14 @@ def build_dps_buckets(
 def trim_dps_bucket_dates(
     dates: Sequence[dt.date],
     values: dict[str, dict[dt.date, float]],
+    *,
+    min_keep_date: dt.date | None = None,
 ) -> tuple[list[dt.date], list[dt.date]]:
     last_nonzero_index = None
     for index, date in enumerate(dates):
         if any(by_date.get(date, 0.0) for by_date in values.values()):
+            last_nonzero_index = index
+        if min_keep_date is not None and date <= min_keep_date:
             last_nonzero_index = index
 
     if last_nonzero_index is None:
@@ -480,6 +485,7 @@ def generate_dps_pp(
         dps_dates, dps_trimmed_trailing_zero_dates = trim_dps_bucket_dates(
             dps_dates,
             dps_values,
+            min_keep_date=cutoff_end,
         )
     pp_periods = select_pp_periods(pp_data, cutoff_end)
     if not pp_periods:
