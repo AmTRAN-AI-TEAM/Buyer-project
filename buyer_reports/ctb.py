@@ -36,6 +36,9 @@ CTB_OUTPUT_NAME = "CTB.xlsx"
 CTB_SHEET = "CTB"
 # AVTC 來源檔曾使用過「CTB-排程」作為人工版型工作表名稱；兩者內容用途相同。
 CTB_TEMPLATE_SHEET_NAMES = (CTB_SHEET, "CTB-排程")
+CTB_TEMPLATE_FILE_KEYWORD = "CTB"
+CTB_TEMPLATE_SHEET_KEYWORD = "CTB"
+CTB_TEMPLATE_PRESERVED_STATIC_COLS = frozenset({1, 6, 7})
 CTB_BOM_SHEET = "BOM1"
 CTB_OVER_SHORTAGE_SHEET = "over shortage"
 CTB_OPEN_PO_SHEET = "open po"
@@ -102,6 +105,7 @@ class BomRow:
     control_pn: str = ""
     moq: str = ""
     allocation: Any = None
+    use_display: Any = None
 
 
 @dataclass
@@ -157,6 +161,17 @@ def _first_sheet_name(wb, targets: Sequence[str]) -> str | None:
     return None
 
 
+def _ctb_template_sheet_name(wb) -> str | None:
+    name = _first_sheet_name(wb, CTB_TEMPLATE_SHEET_NAMES)
+    if name is not None:
+        return name
+    keyword = normalize_label(CTB_TEMPLATE_SHEET_KEYWORD)
+    return next(
+        (sheet_name for sheet_name in wb.sheetnames if keyword in normalize_label(sheet_name)),
+        None,
+    )
+
+
 def workbook_has_sheet(path: Path, sheet_name: str) -> bool:
     try:
         wb = load_workbook(path, read_only=True, data_only=True)
@@ -177,6 +192,27 @@ def workbook_has_any_sheet(path: Path, sheet_names: Sequence[str]) -> bool:
         return _first_sheet_name(wb, sheet_names) is not None
     finally:
         wb.close()
+
+
+def workbook_has_ctb_template_sheet(path: Path) -> bool:
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001 - caller treats unreadable files as non-candidates
+        return False
+    try:
+        return _ctb_template_sheet_name(wb) is not None
+    finally:
+        wb.close()
+
+
+def workbook_is_ctb_template(path: Path) -> bool:
+    return (
+        path.is_file()
+        and path.suffix.lower() == ".xlsx"
+        and not path.name.startswith("~$")
+        and CTB_TEMPLATE_FILE_KEYWORD.casefold() in path.name.casefold()
+        and workbook_has_ctb_template_sheet(path)
+    )
 
 
 def workbook_has_any_ctb_sheet(path: Path) -> bool:
@@ -243,6 +279,18 @@ def find_optional_workbook_with_sheets(
         if path.is_file()
         and not path.name.startswith("~$")
         and workbook_has_any_sheet(path, sheet_names)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def find_optional_ctb_template_workbook(input_dir: Path) -> Path | None:
+    candidates = [
+        path
+        for path in input_dir.glob("*.xlsx")
+        if workbook_is_ctb_template(path)
     ]
     if not candidates:
         return None
@@ -687,7 +735,7 @@ def _read_template_eta_vendor_by_site(template_path: Path | None) -> dict[str, s
     except Exception:  # noqa: BLE001 - vendor mapping is a best-effort hint
         return {}
     try:
-        sheet_name = _first_sheet_name(wb, CTB_TEMPLATE_SHEET_NAMES)
+        sheet_name = _ctb_template_sheet_name(wb)
         if sheet_name is None:
             return {}
         ws = wb[sheet_name]
@@ -1252,12 +1300,14 @@ def _write_static_cells(
     po: OpenPoRecord | None = None,
     *,
     source_lookup_formulas: bool = True,
+    preserve_columns: frozenset[int] = frozenset(),
 ) -> None:
     shortage = part.shortage
     supplier_site = po.supplier_site if po else ""
     key_value = _eta_key(part.part, supplier_site) if row_type.casefold() == "eta" and po is not None else key
 
-    _clear_cell(ws.cell(row_idx, 1))
+    if 1 not in preserve_columns:
+        _clear_cell(ws.cell(row_idx, 1))
     _write_optional_text_cell(ws.cell(row_idx, 2), part.model)
     write_text_cell(ws.cell(row_idx, 3), part.part)
     if row_type.casefold() == "eta" and po is not None:
@@ -1265,12 +1315,14 @@ def _write_static_cells(
     else:
         _write_optional_text_cell(ws.cell(row_idx, 4), key_value)
     _write_optional_text_cell(ws.cell(row_idx, 5), supplier_site)
-    _write_optional_text_cell(ws.cell(row_idx, 6), part.vendor)
-    if row_type.casefold() == "eta":
-        vendor = po.vendor if po and po.vendor else _fallback_vendor_from_part(part)
-        _write_optional_text_cell(ws.cell(row_idx, 7), vendor)
-    else:
-        _clear_cell(ws.cell(row_idx, 7))
+    if 6 not in preserve_columns:
+        _write_optional_text_cell(ws.cell(row_idx, 6), part.vendor)
+    if 7 not in preserve_columns:
+        if row_type.casefold() == "eta":
+            vendor = po.vendor if po and po.vendor else _fallback_vendor_from_part(part)
+            _write_optional_text_cell(ws.cell(row_idx, 7), vendor)
+        else:
+            _clear_cell(ws.cell(row_idx, 7))
     _clear_cell(ws.cell(row_idx, 8))
     _clear_cell(ws.cell(row_idx, 9))
     if shortage and row_type.lower().startswith("balance"):
@@ -1672,18 +1724,22 @@ def _clear_tail_values(ws, row_idx: int, first_col: int) -> None:
 
 
 def _write_template_part_static(ws, row_idx: int, part: CtbPart, row_type: str) -> None:
-    _write_static_cells(ws, row_idx, part, row_type)
+    _write_static_cells(
+        ws,
+        row_idx,
+        part,
+        row_type,
+        preserve_columns=CTB_TEMPLATE_PRESERVED_STATIC_COLS,
+    )
 
 
-def _write_template_eta_static(ws, row_idx: int, part: CtbPart, record: OpenPoRecord | None) -> None:
+def _write_template_eta_static(ws, row_idx: int, _part: CtbPart, record: OpenPoRecord | None) -> None:
     if record is None:
         _clear_cell(ws.cell(row_idx, 4))
         _clear_cell(ws.cell(row_idx, 5))
-        _write_optional_text_cell(ws.cell(row_idx, 7), _fallback_vendor_from_part(part))
         return
     _write_formula_cell(ws.cell(row_idx, 4), f"={_cell_ref(row_idx, 3)}&{_cell_ref(row_idx, 5)}")
     _write_optional_text_cell(ws.cell(row_idx, 5), record.supplier_site)
-    _write_optional_text_cell(ws.cell(row_idx, 7), record.vendor or _fallback_vendor_from_part(part))
 
 
 def _formula_sum_col_range(formula) -> tuple[int, int] | None:
@@ -1902,11 +1958,12 @@ def write_ctb_from_template(
     template_wb = load_workbook(template_path, data_only=True)
     formula_wb = load_workbook(template_path, data_only=False)
     try:
-        template_name = _first_sheet_name(template_wb, CTB_TEMPLATE_SHEET_NAMES)
-        formula_name = _first_sheet_name(formula_wb, CTB_TEMPLATE_SHEET_NAMES)
+        template_name = _ctb_template_sheet_name(template_wb)
+        formula_name = _ctb_template_sheet_name(formula_wb)
         if template_name is None or formula_name is None:
-            names = " / ".join(CTB_TEMPLATE_SHEET_NAMES)
-            raise SystemExit(f"{template_path.name} 內找不到 {names} 工作表")
+            raise SystemExit(
+                f"{template_path.name} 內找不到名稱包含 {CTB_TEMPLATE_SHEET_KEYWORD!r} 的工作表"
+            )
         template_ws = template_wb[template_name]
         formula_ws = formula_wb[formula_name]
         ws = wb.active
@@ -2003,19 +2060,21 @@ def generate_ctb(
     shortage = read_over_shortage(over_shortage_path)
     open_po = read_open_po(open_po_path)
     parts_by_part, part_order = build_part_map(periods, bom_rows, shortage, open_po)
-    assign_open_po_vendors(open_po, parts_by_part, _read_template_eta_vendor_by_site(template_path))
+    valid_template_path = (
+        template_path
+        if template_path is not None and workbook_is_ctb_template(template_path)
+        else None
+    )
+    assign_open_po_vendors(open_po, parts_by_part, _read_template_eta_vendor_by_site(valid_template_path))
     parts = filter_ctb_parts(parts_by_part, part_order)
 
     wb = Workbook()
     eta_periods: Sequence[Period] = periods
     eta_demand_by_part: dict[str, list[float]] | None = None
-    if template_path is not None and workbook_has_any_sheet(
-        template_path,
-        CTB_TEMPLATE_SHEET_NAMES,
-    ):
+    if valid_template_path is not None:
         stats = write_ctb_from_template(
             wb,
-            template_path,
+            valid_template_path,
             periods,
             parts_by_part,
             shortage,
@@ -2074,7 +2133,7 @@ def generate_ctb(
         "bom_source": bom_path,
         "open_po_source": open_po_path,
         "over_shortage_source": over_shortage_path,
-        "template_source": template_path if stats.get("mode") == "template" else None,
+        "template_source": valid_template_path if stats.get("mode") == "template" else None,
         "eta_output": eta_info["output"],
         "eta_report_rows": eta_info["rows"],
         "eta_report_periods": eta_info["periods"],

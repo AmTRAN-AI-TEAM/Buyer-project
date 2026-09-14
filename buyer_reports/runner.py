@@ -44,8 +44,7 @@ from .common import (
 from .compare import compare
 from .ctb import (
     CTB_OUTPUT_NAME,
-    CTB_TEMPLATE_SHEET_NAMES,
-    find_optional_workbook_with_sheets,
+    find_optional_ctb_template_workbook,
     find_workbook_with_sheet,
     generate_ctb,
     has_ctb_input_candidates,
@@ -2363,15 +2362,28 @@ def run_ctb_report(
             )
             log(f"\n--- {title} ---")
             log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
-            log(
-                f"  CTB 參考來源    ：{info['reference_source'].name}"
-                "（讀取 demand / CTB / PO，並沿用 CTB 版型；不複製原始內容）"
-            )
+            has_ctb_sheet = bool(info.get("has_ctb_sheet"))
+            if has_ctb_sheet:
+                log(
+                    f"  CTB 參考來源    ：{info['reference_source'].name}"
+                    "（讀取 demand / CTB / PO，沿用 CTB sheet 版型；不複製原始內容）"
+                )
+            else:
+                log(
+                    f"  CTB 參考來源    ：{info['reference_source'].name}"
+                    "（讀取 demand / PO；未提供 CTB sheet，程式新建欄位標題版型）"
+                )
             log(f"  shortage 來源   ：{info['shortage_source'].name}（over shortage）")
-            log("  B 欄料號        ：以 DPS+PP FG → demand PART_NO 為主，CTB sheet 僅補用量/搭配料展開")
-            log("  料號排序        ：可計算料號依 input CTB 群組/來源列順序；缺 mapping 成品置於末端")
-            log("  ERP 預留欄      ：A/C/E/I/J 僅保留欄名，資料列留白")
-            log("  BOM 用量        ：使用光學 CTB CTB sheet 的 F 欄；demand 特別用量忽略")
+            if has_ctb_sheet:
+                log("  B 欄料號        ：DPS+PP FG → demand PART_NO → CTB sheet B/F 展開")
+                log("  料號排序        ：可計算料號依 input CTB 群組/來源列順序；缺 mapping 成品置於末端")
+                log("  A/C/E/F/I       ：取 input CTB sheet 對應欄位；J 欄固定留白")
+                log("  BOM 用量        ：使用光學 CTB CTB sheet 的 F 欄；demand 特别用量忽略")
+            else:
+                log("  B 欄料號        ：DPS+PP FG → demand PART_NO")
+                log("  料號排序        ：依 demand 來源列順序；缺 mapping 成品置於末端")
+                log("  A/C/E/I/J       ：未提供 CTB sheet，資料列留白")
+                log("  BOM 用量        ：使用 demand 特别用量 欄")
             log("  Open PO         ：使用 PO sheet 實際子件數量；Supplier site 由 ERP Price Vendor Site 對應")
             log(f"  Balance 初始需求：只加總至 DPS cutoff {dps_cutoff_end}")
             log(
@@ -2432,10 +2444,7 @@ def run_ctb_report(
             "over shortage",
             f"{title} over shortage",
         )
-        template_path = find_optional_workbook_with_sheets(
-            context.input_dir,
-            CTB_TEMPLATE_SHEET_NAMES,
-        )
+        template_path = find_optional_ctb_template_workbook(context.input_dir)
         progress_step(f"{title}: 產出 CTB")
         info = generate_ctb(
             dps_pp_path=dps_pp_path,
@@ -2459,7 +2468,7 @@ def run_ctb_report(
         if info.get("template_source") is not None:
             log(
                 f"  CTB 版型來源    ：{info['template_source'].name}"
-                f"（工作表 {info.get('template_sheet', 'CTB')}；只沿用列結構與格式，數值重算）"
+                f"（工作表 {info.get('template_sheet', 'CTB')}；沿用 A/F/G、列結構與格式，數值重算）"
             )
         else:
             log("  CTB 版型來源    ：未提供，使用程式新建版面")

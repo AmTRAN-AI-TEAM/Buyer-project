@@ -2,9 +2,10 @@
 
 RAKEN does not provide the generic ``BOM1`` / ``open po`` workbook layout used
 by the AVTC flow.  Its BOM relationship and usage come from the reference CTB
-workbook, while PO and shortage data come from separate sheets/files.  This
-module translates those sources into the common CTB data classes without
-changing the AVTC readers.
+workbook when available, or from demand ``PART_NO`` / ``特别用量`` as a fallback.
+PO and shortage data come from separate sheets/files.  This module translates
+those sources into the common CTB data classes without changing the AVTC
+readers.
 """
 
 from __future__ import annotations
@@ -64,6 +65,21 @@ RAKEN_DEMAND_SHEET = "demand"
 RAKEN_REFERENCE_CTB_SHEET = "CTB"
 RAKEN_PO_SHEET = "PO"
 RAKEN_SHORTAGE_SHEET = "over shortage"
+RAKEN_FIRST_PERIOD_COL = 12
+RAKEN_ROW_TYPE_COL = 11
+RAKEN_STATIC_HEADERS = (
+    "org",
+    "乐轩料号",
+    "XM 料号AVAP管控",
+    "Model",
+    "Description",
+    "用量",
+    "Price",
+    "Open PO",
+    "Allocation",
+    "包装MOQ",
+    "",
+)
 
 NON_MATERIAL_LABELS = (
     "不用lbr",
@@ -83,6 +99,7 @@ class RakenGroup:
     org: str
     control_pn: str
     moq: str
+    allocation: Any = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +113,7 @@ class RakenDetail:
     control_pn: str
     moq: str
     allocation: Any = None
+    use_value: Any = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +134,18 @@ class RakenChildSpec:
     control_pn: str
     moq: str
     allocation: Any = None
+    use_value: Any = None
+
+
+@dataclass(frozen=True)
+class RakenDemandEntry:
+    source_row: int
+    parent: str
+    part: str
+    model: str
+    vendor: str
+    use_value: Any = None
+    use: float | None = None
 
 
 def _part_key(value: Any) -> str:
@@ -194,6 +224,11 @@ def _use_tokens(value: Any) -> list[float]:
             continue
         values.append(numeric(token))
     return values
+
+
+def _single_use_value(value: Any) -> float | None:
+    values = _use_tokens(value)
+    return values[0] if len(values) == 1 else None
 
 
 def _expand_compound_part(value: Any) -> list[str]:
@@ -283,7 +318,7 @@ def _reference_candidates(input_dir: Path) -> list[Path]:
             continue
         if all(
             workbook_has_sheet(path, sheet)
-            for sheet in (RAKEN_DEMAND_SHEET, RAKEN_REFERENCE_CTB_SHEET, RAKEN_PO_SHEET)
+            for sheet in (RAKEN_DEMAND_SHEET, RAKEN_PO_SHEET)
         ):
             candidates.append(path)
     return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
@@ -293,8 +328,8 @@ def find_raken_reference_workbook(input_dir: Path) -> Path:
     candidates = _reference_candidates(input_dir)
     if not candidates:
         raise SystemExit(
-            f"找不到 RAKEN CTB 參考檔：{input_dir} 內需有同時包含 "
-            "demand、CTB、PO 工作表的 .xlsx"
+            f"找不到 RAKEN 參考檔：{input_dir} 內需有同時包含 "
+            "demand、PO 工作表的 .xlsx"
         )
     return candidates[0]
 
@@ -330,7 +365,7 @@ def has_raken_ctb_input_candidates(input_dir: Path) -> bool:
 
 def _read_raken_demand_mapping(
     reference_path: Path,
-) -> tuple[dict[str, list[dict[str, str]]], dict[str, list[dict[str, str]]], dict[str, int]]:
+) -> tuple[dict[str, list[RakenDemandEntry]], dict[str, list[RakenDemandEntry]], dict[str, int]]:
     wb = load_workbook(reference_path, read_only=True, data_only=True)
     try:
         sheet_name = next(
@@ -349,14 +384,16 @@ def _read_raken_demand_mapping(
         part_col = _find_column(headers, ("PART_NO", "PART NO"))
         model_col = _find_column(headers, ("Model",))
         vendor_col = _find_column(headers, ("VENDOR", "Vendor"))
+        use_col = _find_column(headers, ("特别用量", "特別用量", "Special Usage", "Usage"))
         if fg_col is None or part_col is None:
             raise SystemExit(f"{reference_path.name} 的 demand 缺少 FG PN 或 PART_NO 欄")
 
-        by_part: dict[str, list[dict[str, str]]] = defaultdict(list)
-        by_parent: dict[str, list[dict[str, str]]] = defaultdict(list)
+        by_part: dict[str, list[RakenDemandEntry]] = defaultdict(list)
+        by_parent: dict[str, list[RakenDemandEntry]] = defaultdict(list)
         skipped = 0
         rows = 0
-        max_col = max(fg_col, part_col, model_col or 0, vendor_col or 0)
+        invalid_use_rows = 0
+        max_col = max(fg_col, part_col, model_col or 0, vendor_col or 0, use_col or 0)
         for row_idx, values in enumerate(
             ws.iter_rows(min_row=header_row + 1, max_col=max_col, values_only=True),
             start=header_row + 1,
@@ -369,26 +406,34 @@ def _read_raken_demand_mapping(
                 continue
             model = _text(values[model_col - 1] if model_col and model_col <= len(values) else "")
             vendor = _text(values[vendor_col - 1] if vendor_col and vendor_col <= len(values) else "")
-            entry = {
-                "parent": fg,
-                "part": part,
-                "model": model,
-                "vendor": vendor,
-                "source_row": str(row_idx),
-            }
+            use_value = values[use_col - 1] if use_col and use_col <= len(values) else None
+            special_use = _single_use_value(use_value)
+            if special_use is None:
+                invalid_use_rows += 1
+            entry = RakenDemandEntry(
+                source_row=row_idx,
+                parent=fg,
+                part=part,
+                model=model,
+                vendor=vendor,
+                use_value=use_value,
+                use=special_use,
+            )
             part_key = _part_key(part)
             parent_key = _part_key(fg)
             if not any(
-                old["parent"].casefold() == fg.casefold()
-                and old["model"] == model
-                and old["vendor"] == vendor
+                old.parent.casefold() == fg.casefold()
+                and old.model == model
+                and old.vendor == vendor
+                and old.use == special_use
                 for old in by_part[part_key]
             ):
                 by_part[part_key].append(entry)
             if not any(
-                old["part"].casefold() == part.casefold()
-                and old["model"] == model
-                and old["vendor"] == vendor
+                old.part.casefold() == part.casefold()
+                and old.model == model
+                and old.vendor == vendor
+                and old.use == special_use
                 for old in by_parent[parent_key]
             ):
                 by_parent[parent_key].append(entry)
@@ -398,6 +443,8 @@ def _read_raken_demand_mapping(
             "skipped": skipped,
             "groups": len(by_part),
             "parents": len(by_parent),
+            "has_special_use_col": int(use_col is not None),
+            "invalid_special_use_rows": invalid_use_rows,
         }
     finally:
         wb.close()
@@ -473,7 +520,11 @@ def _group_children(
                     moq=detail.moq or groups[index].moq,
                     allocation=detail.allocation
                     if detail.allocation not in (None, "")
-                    else allocation_by_child[index].get(detail_key, allocation_by_group.get(index)),
+                    else allocation_by_child[index].get(
+                        detail_key,
+                        allocation_by_group.get(index, groups[index].allocation),
+                    ),
+                    use_value=detail.use_value,
                 )
             )
 
@@ -497,6 +548,10 @@ def _group_children(
             key: tokens[pos] if pos < len(tokens) else 1.0
             for pos, key in enumerate(group_expected)
         }
+        use_display_by_key = {
+            key: group.use_value if len(group_expected) == 1 else clean_number(token_by_key.get(key, 1.0))
+            for key in group_expected
+        }
         for key in [_part_key(part) for part in missing]:
             result[index].append(
                 RakenChildSpec(
@@ -508,7 +563,11 @@ def _group_children(
                     org=group.org,
                     control_pn=group.control_pn,
                     moq=group.moq,
-                    allocation=allocation_by_child[index].get(key, allocation_by_group.get(index)),
+                    allocation=allocation_by_child[index].get(
+                        key,
+                        allocation_by_group.get(index, group.allocation),
+                    ),
+                    use_value=use_display_by_key.get(key),
                 )
             )
     return result
@@ -563,12 +622,98 @@ def _lookup_ctb_child_specs(
     return by_group.get(key) or by_child.get(key) or []
 
 
+def _dps_pp_demand_entries(
+    demand_source: Mapping[str, Sequence[float]] | Sequence[DpsPpDemandRow],
+) -> Sequence[DpsPpDemandRow]:
+    if isinstance(demand_source, Mapping):
+        return tuple(
+            DpsPpDemandRow(source_row=0, parent=parent, demand=list(demand))
+            for parent, demand in demand_source.items()
+        )
+    return demand_source
+
+
 def read_raken_bom_rows(
     reference_path: Path,
     periods: Sequence[Period],
     demand_source: Mapping[str, Sequence[float]] | Sequence[DpsPpDemandRow],
 ) -> tuple[list[BomRow], dict[str, Any]]:
     mapping_by_part, mapping_by_parent, demand_stats = _read_raken_demand_mapping(reference_path)
+    ctb_sheet_available = workbook_has_sheet(reference_path, RAKEN_REFERENCE_CTB_SHEET)
+    demand_entries = _dps_pp_demand_entries(demand_source)
+    if not ctb_sheet_available:
+        rows: list[BomRow] = []
+        warnings: list[str] = []
+        active_parent_count = 0
+        mapped_demand_links = 0
+        missing_demand_parents: list[str] = []
+        invalid_special_uses: list[str] = []
+        for demand_entry in demand_entries:
+            parent = demand_entry.parent
+            parent_demand = demand_entry.demand
+            if not any(parent_demand):
+                continue
+            active_parent_count += 1
+            mappings = mapping_by_parent.get(_part_key(parent), [])
+            if not mappings:
+                missing_demand_parents.append(parent)
+                continue
+            for item in mappings:
+                if item.use is None:
+                    invalid_special_uses.append(
+                        f"demand row {item.source_row} FG {parent} PART_NO {item.part} "
+                        f"特别用量={_text(item.use_value)!r}"
+                    )
+                    continue
+                mapped_demand_links += 1
+                rows.append(
+                    BomRow(
+                        source_row=item.source_row,
+                        category=item.model,
+                        parent=parent,
+                        child=item.part,
+                        use=item.use,
+                        remark="",
+                        vendor=item.vendor,
+                        demand=[value * item.use for value in parent_demand],
+                        use_display=item.use_value,
+                    )
+                )
+
+        if not demand_stats["has_special_use_col"]:
+            warnings.append("參考檔沒有 CTB sheet，且 demand 找不到 特别用量 欄，無法建立 F 用量")
+        _append_summary_warning(
+            warnings,
+            "DPS+PP 有需求成品在 demand sheet 找不到 FG PN 對應，共 ",
+            missing_demand_parents,
+            action="已以空白計算列輸出",
+        )
+        _append_summary_warning(
+            warnings,
+            "無 CTB sheet 且 demand 特别用量 無法解析，共 ",
+            invalid_special_uses,
+            action="已略過",
+        )
+        return rows, {
+            "groups": 0,
+            "mapped_groups": mapped_demand_links,
+            "bom_rows": len(rows),
+            "warnings": warnings,
+            "demand_rows": demand_stats["rows"],
+            "demand_skipped": demand_stats["skipped"],
+            "demand_groups": len(mapping_by_part),
+            "demand_parents": demand_stats["parents"],
+            "active_dps_pp_parents": active_parent_count,
+            "mapped_demand_links": mapped_demand_links,
+            "ctb_group_keys": 0,
+            "ctb_child_keys": 0,
+            "missing_demand_parents": missing_demand_parents,
+            "missing_ctb_parts": [],
+            "invalid_special_uses": invalid_special_uses,
+            "has_ctb_sheet": False,
+            "source_mode": "demand_special_use",
+        }
+
     raw_rows = _read_raken_ctb_rows(reference_path)
     header_row = None
     for row_idx, values in raw_rows[:20]:
@@ -600,6 +745,7 @@ def read_raken_bom_rows(
                     _text(values[0]),
                     _text(values[2]),
                     _text(values[9]),
+                    _raken_ctb_allocation_value(values[8]),
                 )
             )
             continue
@@ -622,6 +768,7 @@ def read_raken_bom_rows(
                     _text(values[2]),
                     _text(values[9]),
                     _raken_ctb_allocation_value(values[8]),
+                    use_value=use_value,
                 )
             )
             continue
@@ -643,14 +790,6 @@ def read_raken_bom_rows(
     mapped_demand_links = 0
     missing_demand_parents: list[str] = []
     missing_ctb_parts: list[str] = []
-    if isinstance(demand_source, Mapping):
-        demand_entries = tuple(
-            DpsPpDemandRow(source_row=0, parent=parent, demand=list(demand))
-            for parent, demand in demand_source.items()
-        )
-    else:
-        demand_entries = demand_source
-
     for demand_entry in demand_entries:
         parent = demand_entry.parent
         parent_demand = demand_entry.demand
@@ -662,10 +801,10 @@ def read_raken_bom_rows(
             missing_demand_parents.append(parent)
             continue
         for item in mappings:
-            child_specs = _lookup_ctb_child_specs(item["part"], ctb_by_group, ctb_by_child)
+            child_specs = _lookup_ctb_child_specs(item.part, ctb_by_group, ctb_by_child)
             if not child_specs:
                 missing_ctb_parts.append(
-                    f"demand row {item['source_row']} FG {parent} PART_NO {item['part']}"
+                    f"demand row {item.source_row} FG {parent} PART_NO {item.part}"
                 )
                 continue
             mapped_demand_links += 1
@@ -673,17 +812,18 @@ def read_raken_bom_rows(
                 rows.append(
                     BomRow(
                         source_row=spec.source_row,
-                        category=item["model"] or spec.model,
+                        category=item.model or spec.model,
                         parent=parent,
                         child=spec.part,
                         use=spec.use,
                         remark=spec.remark,
-                        vendor=item["vendor"],
+                        vendor=item.vendor,
                         demand=[value * spec.use for value in parent_demand],
                         org=spec.org,
                         control_pn=spec.control_pn,
                         moq=spec.moq,
                         allocation=spec.allocation,
+                        use_display=spec.use_value,
                     )
                 )
 
@@ -714,6 +854,9 @@ def read_raken_bom_rows(
         "ctb_child_keys": len(ctb_by_child),
         "missing_demand_parents": missing_demand_parents,
         "missing_ctb_parts": missing_ctb_parts,
+        "invalid_special_uses": [],
+        "has_ctb_sheet": True,
+        "source_mode": "ctb_sheet",
     }
 
 
@@ -931,13 +1074,30 @@ def _raken_template_ctb_stream(template_path: Path) -> BytesIO:
             if element is not None:
                 workbook_root.remove(element)
 
+        available_files = set(source_zip.namelist())
         workbook_rels = ET.Element(qname(package_rel_ns, "Relationships"))
-        relationships = (
+        relationships = [
             ("rId1", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet", "worksheets/sheet1.xml"),
             ("rId2", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles", "styles.xml"),
-            ("rId3", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings", "sharedStrings.xml"),
-            ("rId4", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme", "theme/theme1.xml"),
-        )
+        ]
+        next_rel_id = 3
+        if "xl/sharedStrings.xml" in available_files:
+            relationships.append(
+                (
+                    f"rId{next_rel_id}",
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings",
+                    "sharedStrings.xml",
+                )
+            )
+            next_rel_id += 1
+        if "xl/theme/theme1.xml" in available_files:
+            relationships.append(
+                (
+                    f"rId{next_rel_id}",
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme",
+                    "theme/theme1.xml",
+                )
+            )
         for rel_id, rel_type, target in relationships:
             ET.SubElement(
                 workbook_rels,
@@ -970,8 +1130,10 @@ def _raken_template_ctb_stream(template_path: Path) -> BytesIO:
             target_zip.writestr("xl/workbook.xml", ET.tostring(workbook_root, encoding="utf-8", xml_declaration=True))
             target_zip.writestr("xl/_rels/workbook.xml.rels", ET.tostring(workbook_rels, encoding="utf-8", xml_declaration=True))
             target_zip.writestr("xl/styles.xml", source_zip.read("xl/styles.xml"))
-            target_zip.writestr("xl/sharedStrings.xml", source_zip.read("xl/sharedStrings.xml"))
-            target_zip.writestr("xl/theme/theme1.xml", source_zip.read("xl/theme/theme1.xml"))
+            if "xl/sharedStrings.xml" in available_files:
+                target_zip.writestr("xl/sharedStrings.xml", source_zip.read("xl/sharedStrings.xml"))
+            if "xl/theme/theme1.xml" in available_files:
+                target_zip.writestr("xl/theme/theme1.xml", source_zip.read("xl/theme/theme1.xml"))
             target_zip.writestr("xl/worksheets/sheet1.xml", ET.tostring(sheet_root, encoding="utf-8", xml_declaration=True))
         stream.seek(0)
         return stream
@@ -1089,16 +1251,29 @@ def _raken_description(part: CtbPart) -> str:
     return part.shortage.description.strip() if part.shortage else ""
 
 
-def _raken_use(part: CtbPart) -> float | str | None:
+def _raken_use_display(row: BomRow) -> Any:
+    value = getattr(row, "use_display", None)
+    if value not in (None, ""):
+        number = _optional_numeric(value)
+        return clean_number(number) if number is not None else _text(value)
+    return clean_number(row.use)
+
+
+def _raken_use(part: CtbPart) -> Any:
     values = []
+    keys = set()
     for row in part.bom_rows:
-        if not any(abs(row.use - old) < 1e-9 for old in values):
-            values.append(row.use)
+        value = _raken_use_display(row)
+        key = f"number:{float(value):.10g}" if isinstance(value, (int, float)) else f"text:{value}"
+        if key in keys:
+            continue
+        keys.add(key)
+        values.append(value)
     if not values:
         return None
     if len(values) == 1:
-        return clean_number(values[0])
-    return "*".join(str(clean_number(value)) for value in values)
+        return values[0]
+    return "*".join(str(value) for value in values)
 
 
 def _raken_allocation_label(value: Any) -> str:
@@ -1183,6 +1358,177 @@ def _raken_write_balance_formulas(
         ws.cell(balance_row, col_idx).value = formula
 
 
+def _write_raken_period_headers(
+    ws,
+    periods: Sequence[Period],
+    *,
+    first_period_col: int,
+    layout_last_col: int,
+) -> None:
+    for col_idx in range(first_period_col, layout_last_col + 1):
+        ws.cell(1, col_idx).value = None
+        ws.cell(2, col_idx).value = None
+        ws.cell(3, col_idx).value = None
+    for index, period in enumerate(periods):
+        col_idx = first_period_col + index
+        if period.start is not None:
+            ws.cell(1, col_idx).value = period.header1 or period.start.strftime("%b").upper()
+            ws.cell(2, col_idx).value = period.header2 or f"WK{period.start.isocalendar().week:02d}"
+            ws.cell(3, col_idx).value = period.start
+        else:
+            ws.cell(1, col_idx).value = period.header1
+            ws.cell(2, col_idx).value = period.header2
+            ws.cell(3, col_idx).value = period.header4 or period.label
+
+
+def _apply_raken_balance_formatting(
+    ws,
+    balance_row_indices: Sequence[int],
+    first_period_col: int,
+    last_period_col: int,
+) -> None:
+    if not balance_row_indices or last_period_col < first_period_col:
+        return
+    for balance_row in balance_row_indices:
+        ws.conditional_formatting.add(
+            f"{get_column_letter(first_period_col)}{balance_row}:"
+            f"{get_column_letter(last_period_col)}{balance_row}",
+            CellIsRule(
+                operator="lessThan",
+                formula=["0"],
+                font=Font(color="FFFF0000"),
+            ),
+        )
+
+
+def _write_raken_output_rows(
+    ws,
+    periods: Sequence[Period],
+    parts: Sequence[CtbPart],
+    price_by_part: dict[str, dict[str, Any]],
+    *,
+    first_period_col: int,
+    layout_last_col: int,
+    dps_cutoff_end: dt.date | None,
+    default_eta_lead_days: int,
+    eta_lead_days_by_supplier_site: dict[str, int] | None,
+    use_ctb_static_fields: bool,
+    prepare_row: Callable[[str, int], None] | None = None,
+) -> dict[str, int]:
+    last_period_col = first_period_col + len(periods) - 1
+    period_columns = [
+        (first_period_col + index, period)
+        for index, period in enumerate(periods)
+    ]
+    initial_sum_cols = _initial_sum_cols_for_cutoff(period_columns, dps_cutoff_end)
+    row_idx = 4
+    demand_rows = detail_rows = balance_rows = placeholder_parts = 0
+    balance_row_indices: list[int] = []
+    for part in parts:
+        calculation_blank = _raken_calculation_blank(part)
+        if calculation_blank:
+            placeholder_parts += 1
+        demand_row = row_idx
+        if prepare_row is not None:
+            prepare_row("demand", demand_row)
+        _write_raken_row_values(
+            ws,
+            demand_row,
+            part,
+            row_type="demand",
+            use_value=_raken_use(part),
+            price_by_part=price_by_part,
+            calculation_blank=calculation_blank,
+            last_period_col=last_period_col,
+            use_ctb_static_fields=use_ctb_static_fields,
+        )
+        if not calculation_blank:
+            for index, value in enumerate(part.demand):
+                ws.cell(demand_row, first_period_col + index).value = clean_number(value)
+        demand_rows += 1
+        row_idx += 1
+
+        schedules = (
+            {}
+            if calculation_blank
+            else eta_schedule_for_records(
+                periods,
+                part.open_po,
+                demand=part.demand,
+                over_shortage=part.shortage.over_shortage if part.shortage else 0.0,
+                default_lead_days=default_eta_lead_days,
+                lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+                period_start_col=first_period_col,
+            )
+        )
+        po_by_key = {record.key: record for record in part.open_po}
+        eta_rows: list[int] = []
+        eta_items = list(schedules.items()) or [("", [0.0] * len(periods))]
+        for key, schedule in eta_items:
+            eta_row = row_idx
+            eta_rows.append(eta_row)
+            if prepare_row is not None:
+                prepare_row("detail", eta_row)
+            record = po_by_key.get(key)
+            _write_raken_row_values(
+                ws,
+                eta_row,
+                part,
+                row_type="ETA",
+                use_value=_raken_use(part),
+                price_by_part=price_by_part,
+                open_po=None if calculation_blank else record.quantity_due if record else None,
+                calculation_blank=calculation_blank,
+                last_period_col=last_period_col,
+                use_ctb_static_fields=use_ctb_static_fields,
+            )
+            if not calculation_blank:
+                for index, value in enumerate(schedule):
+                    ws.cell(eta_row, first_period_col + index).value = clean_number(value)
+            detail_rows += 1
+            row_idx += 1
+
+        balance_row = row_idx
+        if prepare_row is not None:
+            prepare_row("balance", balance_row)
+        _write_raken_row_values(
+            ws,
+            balance_row,
+            part,
+            row_type="Balance",
+            use_value=_raken_use(part),
+            price_by_part=price_by_part,
+            calculation_blank=calculation_blank,
+            last_period_col=last_period_col,
+            use_ctb_static_fields=use_ctb_static_fields,
+        )
+        if not calculation_blank:
+            _raken_write_balance_formulas(
+                ws,
+                balance_row,
+                demand_row,
+                eta_rows,
+                period_columns,
+                part.shortage.over_shortage if part.shortage else 0.0,
+                initial_sum_cols,
+            )
+            balance_row_indices.append(balance_row)
+        balance_rows += 1
+        row_idx += 1
+
+    ws.auto_filter.ref = f"A3:{get_column_letter(layout_last_col)}{row_idx - 1}"
+    _apply_raken_balance_formatting(ws, balance_row_indices, first_period_col, last_period_col)
+    return {
+        "demand_rows": demand_rows,
+        "eta_rows": detail_rows,
+        "other_rows": 0,
+        "balance_rows": balance_rows,
+        "placeholder_parts": placeholder_parts,
+        "periods": len(periods),
+        "output_rows": row_idx - 1,
+    }
+
+
 def write_raken_ctb_sheet(
     wb: Workbook,
     template_path: Path,
@@ -1193,7 +1539,7 @@ def write_raken_ctb_sheet(
     dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int,
     eta_lead_days_by_supplier_site: dict[str, int] | None = None,
-) -> dict[str, int | str]:
+) -> dict[str, Any]:
     template_stream = _raken_template_ctb_stream(template_path)
     template_wb = load_workbook(template_stream, data_only=False, keep_links=False)
     try:
@@ -1216,10 +1562,10 @@ def write_raken_ctb_sheet(
         for row_idx in range(1, 4):
             for col_idx in range(1, layout_last_col + 1):
                 target_ws.cell(row_idx, col_idx).value = None
-        for col_idx in range(1, 11):
+        for col_idx in range(1, RAKEN_ROW_TYPE_COL + 1):
             target_ws.cell(3, col_idx).value = template_ws.cell(3, col_idx).value
 
-        first_period_col = 12
+        first_period_col = RAKEN_FIRST_PERIOD_COL
         last_period_col = first_period_col + len(periods) - 1
         if last_period_col > layout_last_col:
             for col_idx in range(layout_last_col + 1, last_period_col + 1):
@@ -1230,143 +1576,107 @@ def write_raken_ctb_sheet(
                         target_ws.cell(row_idx, col_idx),
                     )
             layout_last_col = last_period_col
-        for col_idx in range(first_period_col, layout_last_col + 1):
-            target_ws.cell(1, col_idx).value = None
-            target_ws.cell(2, col_idx).value = None
-            target_ws.cell(3, col_idx).value = None
-        for index, period in enumerate(periods):
-            col_idx = first_period_col + index
-            if period.start is not None:
-                target_ws.cell(1, col_idx).value = period.header1 or period.start.strftime("%b").upper()
-                target_ws.cell(2, col_idx).value = period.header2 or f"WK{period.start.isocalendar().week:02d}"
-                target_ws.cell(3, col_idx).value = period.start
-            else:
-                target_ws.cell(1, col_idx).value = period.header1
-                target_ws.cell(2, col_idx).value = period.header2
-                target_ws.cell(3, col_idx).value = period.header4 or period.label
+        _write_raken_period_headers(
+            target_ws,
+            periods,
+            first_period_col=first_period_col,
+            layout_last_col=layout_last_col,
+        )
 
-        period_columns = [
-            (first_period_col + index, period)
-            for index, period in enumerate(periods)
-        ]
-        initial_sum_cols = _initial_sum_cols_for_cutoff(period_columns, dps_cutoff_end)
-        row_idx = 4
-        demand_rows = detail_rows = balance_rows = placeholder_parts = 0
-        balance_row_indices: list[int] = []
-        for part in parts:
-            calculation_blank = _raken_calculation_blank(part)
-            if calculation_blank:
-                placeholder_parts += 1
-            demand_row = row_idx
-            _copy_raken_data_row(template_ws, target_ws, demand_style_row, demand_row, layout_last_col)
-            _write_raken_row_values(
-                target_ws,
-                demand_row,
-                part,
-                row_type="demand",
-                use_value=_raken_use(part),
-                price_by_part=price_by_part,
-                calculation_blank=calculation_blank,
-                last_period_col=last_period_col,
-            )
-            if not calculation_blank:
-                for index, value in enumerate(part.demand):
-                    target_ws.cell(demand_row, first_period_col + index).value = clean_number(value)
-            demand_rows += 1
-            row_idx += 1
+        style_rows = {
+            "demand": demand_style_row,
+            "detail": detail_style_row,
+            "balance": balance_style_row,
+        }
 
-            schedules = (
-                {}
-                if calculation_blank
-                else eta_schedule_for_records(
-                    periods,
-                    part.open_po,
-                    demand=part.demand,
-                    over_shortage=part.shortage.over_shortage if part.shortage else 0.0,
-                    default_lead_days=default_eta_lead_days,
-                    lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
-                    period_start_col=first_period_col,
-                )
-            )
-            po_by_key = {record.key: record for record in part.open_po}
-            eta_rows: list[int] = []
-            eta_items = list(schedules.items()) or [("", [0.0] * len(periods))]
-            for key, schedule in eta_items:
-                eta_row = row_idx
-                eta_rows.append(eta_row)
-                _copy_raken_data_row(template_ws, target_ws, detail_style_row, eta_row, layout_last_col)
-                record = po_by_key.get(key)
-                _write_raken_row_values(
-                    target_ws,
-                    eta_row,
-                    part,
-                    row_type="ETA",
-                    use_value=_raken_use(part),
-                    price_by_part=price_by_part,
-                    open_po=None if calculation_blank else record.quantity_due if record else None,
-                    calculation_blank=calculation_blank,
-                    last_period_col=last_period_col,
-                )
-                if not calculation_blank:
-                    for index, value in enumerate(schedule):
-                        target_ws.cell(eta_row, first_period_col + index).value = clean_number(value)
-                detail_rows += 1
-                row_idx += 1
+        def prepare_row(kind: str, target_row: int) -> None:
+            _copy_raken_data_row(template_ws, target_ws, style_rows[kind], target_row, layout_last_col)
 
-            balance_row = row_idx
-            _copy_raken_data_row(template_ws, target_ws, balance_style_row, balance_row, layout_last_col)
-            _write_raken_row_values(
-                target_ws,
-                balance_row,
-                part,
-                row_type="Balance",
-                use_value=_raken_use(part),
-                price_by_part=price_by_part,
-                calculation_blank=calculation_blank,
-                last_period_col=last_period_col,
-            )
-            if not calculation_blank:
-                _raken_write_balance_formulas(
-                    target_ws,
-                    balance_row,
-                    demand_row,
-                    eta_rows,
-                    period_columns,
-                    part.shortage.over_shortage if part.shortage else 0.0,
-                    initial_sum_cols,
-                )
-                balance_row_indices.append(balance_row)
-            balance_rows += 1
-            row_idx += 1
-
-        target_ws.auto_filter.ref = f"A3:{get_column_letter(layout_last_col)}{row_idx - 1}"
-        if balance_row_indices and periods:
-            for balance_row in balance_row_indices:
-                target_ws.conditional_formatting.add(
-                    f"{get_column_letter(first_period_col)}{balance_row}:"
-                    f"{get_column_letter(last_period_col)}{balance_row}",
-                    CellIsRule(
-                        operator="lessThan",
-                        formula=["0"],
-                        font=Font(color="FFFF0000"),
-                    ),
-                )
+        stats = _write_raken_output_rows(
+            target_ws,
+            periods,
+            parts,
+            price_by_part,
+            first_period_col=first_period_col,
+            layout_last_col=layout_last_col,
+            dps_cutoff_end=dps_cutoff_end,
+            default_eta_lead_days=default_eta_lead_days,
+            eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+            use_ctb_static_fields=True,
+            prepare_row=prepare_row,
+        )
         return {
             "mode": "raken-template",
             "parts": len(parts),
-            "demand_rows": demand_rows,
-            "eta_rows": detail_rows,
-            "other_rows": 0,
-            "balance_rows": balance_rows,
-            "placeholder_parts": placeholder_parts,
-            "periods": len(periods),
             "template_rows": template_ws.max_row,
-            "output_rows": row_idx - 1,
             "template_source": template_path,
+            **stats,
         }
     finally:
         template_wb.close()
         template_stream.close()
+
+
+def write_raken_generated_ctb_sheet(
+    wb: Workbook,
+    periods: Sequence[Period],
+    parts: Sequence[CtbPart],
+    price_by_part: dict[str, dict[str, Any]],
+    *,
+    dps_cutoff_end: dt.date | None = None,
+    default_eta_lead_days: int,
+    eta_lead_days_by_supplier_site: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    target_ws = wb.active
+    target_ws.title = CTB_SHEET
+    first_period_col = RAKEN_FIRST_PERIOD_COL
+    layout_last_col = max(RAKEN_ROW_TYPE_COL, first_period_col + len(periods) - 1)
+    widths = {
+        1: 10,
+        2: 22,
+        3: 20,
+        4: 18,
+        5: 28,
+        6: 10,
+        7: 10,
+        8: 12,
+        9: 12,
+        10: 12,
+        11: 12,
+    }
+    for col_idx in range(1, layout_last_col + 1):
+        width = widths.get(col_idx, 12)
+        target_ws.column_dimensions[get_column_letter(col_idx)].width = width
+    for col_idx, header in enumerate(RAKEN_STATIC_HEADERS, start=1):
+        cell = target_ws.cell(3, col_idx)
+        cell.value = header
+        cell.font = Font(bold=True)
+    target_ws.freeze_panes = target_ws.cell(4, first_period_col)
+    _write_raken_period_headers(
+        target_ws,
+        periods,
+        first_period_col=first_period_col,
+        layout_last_col=layout_last_col,
+    )
+    stats = _write_raken_output_rows(
+        target_ws,
+        periods,
+        parts,
+        price_by_part,
+        first_period_col=first_period_col,
+        layout_last_col=layout_last_col,
+        dps_cutoff_end=dps_cutoff_end,
+        default_eta_lead_days=default_eta_lead_days,
+        eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+        use_ctb_static_fields=False,
+    )
+    return {
+        "mode": "raken-generated",
+        "parts": len(parts),
+        "template_rows": 0,
+        "template_source": None,
+        **stats,
+    }
 
 
 def _write_raken_row_values(
@@ -1380,17 +1690,18 @@ def _write_raken_row_values(
     open_po: float | None = None,
     calculation_blank: bool = False,
     last_period_col: int,
+    use_ctb_static_fields: bool = False,
 ) -> None:
     values: dict[int, Any] = {
-        1: None,
+        1: _raken_bom_text(part, "org") if use_ctb_static_fields else None,
         2: part.part,
-        3: None,
+        3: _raken_bom_text(part, "control_pn") if use_ctb_static_fields else None,
         4: _raken_model(part),
-        5: None,
+        5: _raken_bom_text(part, "remark") if use_ctb_static_fields else None,
         6: None if calculation_blank else use_value,
         7: None if calculation_blank else price_by_part.get(_part_key(part.part), {}).get("price"),
         8: None if calculation_blank else open_po,
-        9: None,
+        9: _raken_allocation(part) if use_ctb_static_fields else None,
         10: None,
         11: row_type,
     }
@@ -1479,6 +1790,7 @@ def generate_raken_ctb(
 ) -> dict[str, Any]:
     periods, demand_rows = read_dps_pp_rows(dps_pp_path)
     bom_rows, bom_info = read_raken_bom_rows(reference_path, periods, demand_rows)
+    has_ctb_sheet = bool(bom_info.get("has_ctb_sheet"))
     bom_part_keys = _raken_bom_part_keys(bom_rows)
     shortage_source = read_over_shortage(shortage_path)
     price_by_part, price_warning = read_raken_erp_price(reference_path)
@@ -1507,18 +1819,29 @@ def generate_raken_ctb(
     )
     parts.extend(placeholder_parts)
     wb = Workbook()
-    # RAKEN output intentionally contains only CTB.  Rebuild the values using
-    # the optical CTB's layout and styles without copying its source content.
-    stats = write_raken_ctb_sheet(
-        wb,
-        reference_path,
-        periods,
-        parts,
-        price_by_part,
-        dps_cutoff_end=dps_cutoff_end,
-        default_eta_lead_days=default_eta_lead_days,
-        eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
-    )
+    # RAKEN output intentionally contains only CTB.  If an input CTB sheet is
+    # available we reuse its layout; otherwise we create the static headers.
+    if has_ctb_sheet:
+        stats = write_raken_ctb_sheet(
+            wb,
+            reference_path,
+            periods,
+            parts,
+            price_by_part,
+            dps_cutoff_end=dps_cutoff_end,
+            default_eta_lead_days=default_eta_lead_days,
+            eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+        )
+    else:
+        stats = write_raken_generated_ctb_sheet(
+            wb,
+            periods,
+            parts,
+            price_by_part,
+            dps_cutoff_end=dps_cutoff_end,
+            default_eta_lead_days=default_eta_lead_days,
+            eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+        )
     eta_info: dict[str, int | Path | None] = {"output": None, "rows": 0, "periods": 0}
     if eta_output_path is not None:
         if eta_progress_callback is not None:
@@ -1526,7 +1849,7 @@ def generate_raken_ctb(
         eta_rows = build_eta_report_rows(
             periods,
             parts,
-            period_start_col=12,
+            period_start_col=RAKEN_FIRST_PERIOD_COL,
             default_eta_lead_days=default_eta_lead_days,
             eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
         )
@@ -1539,7 +1862,6 @@ def generate_raken_ctb(
     wb.save(output_path)
     return {
         **stats,
-        "mode": "raken-template",
         "dps_pp_source": dps_pp_path,
         "reference_source": reference_path,
         "shortage_source": shortage_path,
@@ -1552,7 +1874,8 @@ def generate_raken_ctb(
         "eta_report_rows": eta_info["rows"],
         "eta_report_periods": eta_info["periods"],
         "placeholder_parts": len(placeholder_parts),
-        "template_source": reference_path,
+        "has_ctb_sheet": has_ctb_sheet,
+        "source_mode": bom_info.get("source_mode"),
         "warnings": bom_info["warnings"] + filter_warnings + ([price_warning] if price_warning else []),
         "raken_bom": bom_info,
         "output": output_path,
