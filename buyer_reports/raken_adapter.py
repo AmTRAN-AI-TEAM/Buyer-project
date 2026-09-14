@@ -17,7 +17,7 @@ from copy import copy
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
@@ -37,6 +37,7 @@ from .common import (
     unhide_workbook_columns,
 )
 from .ctb import (
+    assign_open_po_vendors,
     BomRow,
     CTB_SHEET,
     CtbPart,
@@ -48,6 +49,7 @@ from .ctb import (
     _enable_formula_recalculation,
     _initial_sum_cols_for_cutoff,
     _sum_rows_in_col_expression,
+    build_eta_report_rows,
     build_part_map,
     eta_schedule_for_records,
     filter_ctb_parts,
@@ -55,6 +57,7 @@ from .ctb import (
     read_over_shortage,
     workbook_has_sheet,
 )
+from .eta import write_eta_report
 
 
 RAKEN_DEMAND_SHEET = "demand"
@@ -762,6 +765,7 @@ def read_raken_open_po(
                     supplier_site=supplier_site,
                     quantity_due=quantity_due,
                     need_by_date=None,
+                    vendor=supplier,
                 )
             )
         return records
@@ -1466,10 +1470,12 @@ def generate_raken_ctb(
     reference_path: Path,
     shortage_path: Path,
     output_path: Path,
+    eta_output_path: Path | None = None,
     *,
     dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int,
     eta_lead_days_by_supplier_site: dict[str, int] | None = None,
+    eta_progress_callback: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     periods, demand_rows = read_dps_pp_rows(dps_pp_path)
     bom_rows, bom_info = read_raken_bom_rows(reference_path, periods, demand_rows)
@@ -1492,6 +1498,7 @@ def generate_raken_ctb(
         )
     shortage = _align_raken_part_names(bom_rows, open_po, shortage)
     parts_by_part, part_order = build_part_map(periods, bom_rows, shortage, open_po)
+    assign_open_po_vendors(open_po, parts_by_part)
     parts = _sort_raken_calculated_parts(filter_ctb_parts(parts_by_part, part_order))
     placeholder_parts = _raken_placeholder_parts(
         periods,
@@ -1512,6 +1519,18 @@ def generate_raken_ctb(
         default_eta_lead_days=default_eta_lead_days,
         eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
     )
+    eta_info: dict[str, int | Path | None] = {"output": None, "rows": 0, "periods": 0}
+    if eta_output_path is not None:
+        if eta_progress_callback is not None:
+            eta_progress_callback()
+        eta_rows = build_eta_report_rows(
+            periods,
+            parts,
+            period_start_col=12,
+            default_eta_lead_days=default_eta_lead_days,
+            eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+        )
+        eta_info = write_eta_report(eta_output_path, periods, eta_rows)
     if wb.sheetnames != [CTB_SHEET]:
         raise SystemExit("RAKEN CTB 輸出應只包含 CTB 工作表")
     _enable_formula_recalculation(wb)
@@ -1529,6 +1548,9 @@ def generate_raken_ctb(
         "over_shortage_source_rows": len(shortage_source),
         "open_po_rows": len(open_po),
         "open_po_source_rows": len(open_po_source),
+        "eta_output": eta_info["output"],
+        "eta_report_rows": eta_info["rows"],
+        "eta_report_periods": eta_info["periods"],
         "placeholder_parts": len(placeholder_parts),
         "template_source": reference_path,
         "warnings": bom_info["warnings"] + filter_warnings + ([price_warning] if price_warning else []),

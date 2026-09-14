@@ -37,7 +37,7 @@ DPS+PP：
 8. 若來源檔內有 BOM1 工作表，程式會用 BOM1 的 B 欄料號對應 H 欄 vendor 寫入 BOM；若沒有，BOM 欄留空。
 
 CTB：
-1. 同一個客戶資料夾內若有 BOM1、open po、over shortage 工作表，且本次 DPS+PP.xlsx 成功產出，會額外產出 CTB.xlsx。
+1. 同一個客戶資料夾內若有 BOM1、open po、over shortage 工作表，且本次 DPS+PP.xlsx 成功產出，會額外產出 CTB.xlsx 與獨立 ETA.xlsx；AVTC 與 RAKEN 各自產出，不會合併成總表。
 2. BOM1 用來將 DPS+PP 的成品需求依 USE 展開成子件需求。
 3. over shortage 用來取得 shortage 起始值；來源 sheet 必須有 Part No 與 OVER SHORTAGE / Over Shortage 欄，程式會直接使用該欄作為 CTB 的 OVER SHORTAGE / balance 起始值。
 4. AVTC open po 可用 Item 或 Part No. 搭配 Supplier Site 或 Trading Vendor 對應料號與 Supplier site，
@@ -49,7 +49,7 @@ CTB：
 8. Balance row 會寫入 Excel 公式：第一期沿用既有起算邏輯，後續期間為上一期 Balance + 上一期 ETA - 本期 Demand - 本期 other；使用者開啟檔案後修改 ETA / other 數字，後續 Balance 會由 Excel 連動重算。
 9. 若同一個客戶資料夾內有原始 CTB 工作表，程式會沿用該 CTB 的表頭、日期欄、列順序與格式作為版型，但 A:M 資料列會依自動化規則重建，不直接抄原始 CTB 的人工欄位；若沒有原始 CTB，仍會用程式新建版面產出。
 10. CTB 主表的 OVER SHORTAGE 與 Balance 期間欄、輔助頁 over shortage 的 Over Shortage 欄若為負數，會以紅色字體顯示。
-11. CTB A:M 欄位規則：A/G/H/I 保留欄位但資料列空白；B 由 BOM1 的 Model+USE 組成，找不到來源則空白；D= C+E，ETA row 會寫入公式；E 取 open po 的 Supplier Site；F 只有在 BOM1 vendor 是乾淨來源時填入，若是反查 CTB 的公式或找不到來源則空白；J 用 SUMIF 從 over shortage 的 OVER SHORTAGE / Over Shortage 欄查回；K 在 ETA row 用 SUMIF 加總 open po Quantity Due，在 Balance row 使用公式 J OVER SHORTAGE - by-day 最後一天的 Balance；L total 會加總該 ETA row 的日期區數量；M 保留 Demand / ETA / other / Balance 等 row type。
+11. CTB A:M 欄位規則：A/H/I 保留欄位但資料列空白；B 由 BOM1 的 Model+USE 組成，找不到來源則空白；D= C+E，ETA row 會寫入公式；E 取 open po 的 Supplier Site；F 填入 BOM1 的 vendor / vender 彙總；若 vendor 欄是公式，會使用 Excel 檔內已保存的顯示值；G 在 ETA row 填入該 supplier site 的報表 vendor，優先使用 BOM1 vendor，BOM1 找不到、空白或 #N/A 時，才沿用 CTB 版型既有 E/G 對應；J 用 SUMIF 從 over shortage 的 OVER SHORTAGE / Over Shortage 欄查回；K 在 ETA row 用 SUMIF 加總 open po Quantity Due，在 Balance row 使用公式 J OVER SHORTAGE - by-day 最後一天的 Balance；L total 會加總該 ETA row 的日期區數量；M 保留 Demand / ETA / other / Balance 等 row type。
 
 二、資料夾結構
 
@@ -113,10 +113,12 @@ BuyerReports/
    - output/AVTC/PP整理後.xlsx
    - output/AVTC/DPS+PP.xlsx
    - output/AVTC/CTB.xlsx
+   - output/AVTC/ETA.xlsx
    - output/RAKEN/DPS整理後.xlsx
    - output/RAKEN/PP整理後.xlsx
    - output/RAKEN/DPS+PP.xlsx
    - output/RAKEN/CTB.xlsx
+   - output/RAKEN/ETA.xlsx
    實際會產出哪些檔案，取決於該客戶資料夾內是否有對應來源檔。
 
 7. 每次執行都會在對應的客戶 output 資料夾產生 log，例如 output/RAKEN/log。
@@ -189,7 +191,7 @@ CTB ETA Supplier site 設定：
 9. AVTC 與 RAKEN 不共用提前天數；即使 Supplier site 文字相同，也會分別存在各自的 ini。
 10. ETA 設定視窗可用 Supplier site、Supplier、備註篩選；搜尋可輸入繁體中文、簡體中文、英文、數字。新偵測且尚未完成設定的 Supplier site 只會在狀態欄顯示紅底，完成套用後恢復一般底色。
 
-輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。DPS / PP 的 total 由程式先計算好，不使用 Excel 公式；CTB 主表的 OVER SHORTAGE、PO Remain、total、Demand / PO summary 與 Balance 期間欄會寫入 Excel 公式，方便使用者開檔後手動調整 ETA / other 並連動重算。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。AVTC CTB 會輸出 CTB、DPS+PP、BOM1、over shortage、open po 五張工作表，方便追溯；RAKEN CTB 只輸出 CTB 工作表。有原始 CTB 時會套用其表頭、日期欄、列結構與格式，但 A:M 資料列會由程式依來源欄位重建；沒有原始 CTB 時仍可新建 CTB。
+輸出檔的標題與料號欄會以文字格式寫入；數量欄與 total 會以數值格式寫入。DPS / PP 的 total 由程式先計算好，不使用 Excel 公式；CTB 主表的 OVER SHORTAGE、PO Remain、total、Demand / PO summary 與 Balance 期間欄會寫入 Excel 公式，方便使用者開檔後手動調整 ETA / other 並連動重算。PP 的 total 只從起始週開始累加，欄名會寫出起算欄，例如 total(WK31起)。DPS+PP 的 total 會加總整份 DPS+PP 期間欄。AVTC CTB 會輸出 CTB、DPS+PP、BOM1、over shortage、open po 五張工作表，方便追溯；RAKEN CTB 只輸出 CTB 工作表。ETA.xlsx 是每個客戶各自的獨立報表，欄位固定為 model、Part No、PO Remain、Vendor 與後續期間欄。有原始 CTB 時會套用其表頭、日期欄、列結構與格式，但 A:M 資料列會由程式依來源欄位重建；沒有原始 CTB 時仍可新建 CTB。
 
 五、常見問題
 

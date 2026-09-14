@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import CellIsRule
@@ -30,6 +30,7 @@ from .common import (
     write_text_cell,
 )
 from .dps_pp import week_label_for_date
+from .eta import EtaReportRow, write_eta_report
 
 CTB_OUTPUT_NAME = "CTB.xlsx"
 CTB_SHEET = "CTB"
@@ -126,6 +127,7 @@ class OpenPoRecord:
     supplier_site: str
     quantity_due: float
     need_by_date: dt.date | None
+    vendor: str = ""
 
 
 @dataclass
@@ -409,21 +411,18 @@ def read_bom_rows(
     demand_by_parent: dict[str, list[float]],
 ) -> list[BomRow]:
     wb = load_workbook(bom_path, data_only=True)
-    formula_wb = load_workbook(bom_path, data_only=False)
     try:
         sheet_name = _sheet_name(wb, CTB_BOM_SHEET)
-        formula_sheet_name = _sheet_name(formula_wb, CTB_BOM_SHEET)
-        if sheet_name is None or formula_sheet_name is None:
+        if sheet_name is None:
             raise SystemExit(f"{bom_path.name} 內找不到 {CTB_BOM_SHEET} 工作表")
         ws = wb[sheet_name]
-        formula_ws = formula_wb[formula_sheet_name]
         header_row = _find_header_row(ws, ["Child P/N", "USE"], max_row=10)
         if header_row is None:
             raise SystemExit(f"{bom_path.name} 的 BOM1 找不到 Child P/N / USE 表頭")
         headers = _header_cols(ws, header_row)
         child_col = _find_col(headers, ["Child P/N", "Child PN", "Child"])
         use_col = _find_col(headers, ["USE"])
-        vendor_col = _find_col(headers, ["vendor"])
+        vendor_col = _find_col(headers, ["vendor", "vender"])
         remark_col = _find_col(headers, ["Remark"])
         model_col = _find_col(headers, ["Model"])
         if child_col is None or use_col is None:
@@ -445,8 +444,7 @@ def read_bom_rows(
                 continue
             parent_demand = demand_by_parent.get(parent_text, [0.0] * len(periods))
             vendor_value = "" if vendor_col is None else ws.cell(row_idx, vendor_col).value
-            vendor_formula = "" if vendor_col is None else formula_ws.cell(row_idx, vendor_col).value
-            vendor_text = "" if _is_ctb_lookup_formula(vendor_formula) or vendor_value is None else str(vendor_value).strip()
+            vendor_text = "" if vendor_value is None else str(vendor_value).strip()
             rows.append(
                 BomRow(
                     source_row=row_idx,
@@ -462,7 +460,6 @@ def read_bom_rows(
         return rows
     finally:
         wb.close()
-        formula_wb.close()
 
 
 def _merge_shortage_record(existing: ShortageRecord, incoming: ShortageRecord) -> None:
@@ -620,10 +617,6 @@ def period_index_for_date(periods: Sequence[Period], date: dt.date | None) -> in
     return dated[-1][0]
 
 
-def _is_ctb_lookup_formula(value) -> bool:
-    return isinstance(value, str) and value.startswith("=") and "CTB!" in value.upper()
-
-
 def _format_use(value: float) -> str:
     cleaned = clean_number(value)
     return str(cleaned)
@@ -664,6 +657,73 @@ def _eta_key(part_no: str, supplier_site: str) -> str:
 
 def _supplier_site_key(value) -> str:
     return "" if value is None else str(value).strip().casefold()
+
+
+def _vendor_candidates(value: Any) -> list[str]:
+    text = "" if value is None else str(value).strip()
+    if not text or text.casefold() == "#n/a":
+        return []
+    return [
+        token.strip()
+        for token in re.split(r"[+/,，、／]+", text)
+        if token.strip()
+    ]
+
+
+def _fallback_vendor_from_part(part: CtbPart | None) -> str:
+    if part is None:
+        return ""
+    candidates = _vendor_candidates(part.vendor)
+    if len(candidates) == 1:
+        return candidates[0]
+    return part.vendor.strip()
+
+
+def _read_template_eta_vendor_by_site(template_path: Path | None) -> dict[str, str]:
+    if template_path is None:
+        return {}
+    try:
+        wb = load_workbook(template_path, data_only=True)
+    except Exception:  # noqa: BLE001 - vendor mapping is a best-effort hint
+        return {}
+    try:
+        sheet_name = _first_sheet_name(wb, CTB_TEMPLATE_SHEET_NAMES)
+        if sheet_name is None:
+            return {}
+        ws = wb[sheet_name]
+        result: dict[str, str] = {}
+        for row_idx in range(5, ws.max_row + 1):
+            if _ctb_row_type(ws, row_idx).casefold() != "eta":
+                continue
+            supplier_site = "" if ws.cell(row_idx, 5).value is None else str(ws.cell(row_idx, 5).value).strip()
+            vendor = "" if ws.cell(row_idx, 7).value is None else str(ws.cell(row_idx, 7).value).strip()
+            if supplier_site and vendor:
+                result.setdefault(_supplier_site_key(supplier_site), vendor)
+        return result
+    finally:
+        wb.close()
+
+
+def assign_open_po_vendors(
+    open_po: Sequence[OpenPoRecord],
+    parts_by_part: Mapping[str, CtbPart],
+    vendor_by_supplier_site: Mapping[str, str] | None = None,
+) -> None:
+    site_map = vendor_by_supplier_site or {}
+    for record in open_po:
+        if record.vendor.strip():
+            continue
+        vendor = _fallback_vendor_from_part(parts_by_part.get(record.item))
+        if not vendor:
+            vendor = site_map.get(_supplier_site_key(record.supplier_site), "")
+        record.vendor = vendor
+
+
+def _eta_report_vendor(part: CtbPart, records: Sequence[OpenPoRecord]) -> str:
+    for record in records:
+        if record.vendor.strip():
+            return record.vendor.strip()
+    return _fallback_vendor_from_part(part)
 
 
 def build_part_map(
@@ -826,6 +886,55 @@ def eta_schedule_for_records(
     return schedules
 
 
+def build_eta_report_rows(
+    periods: Sequence[Period],
+    parts: Sequence[CtbPart],
+    *,
+    demand_by_part: Mapping[str, Sequence[float]] | None = None,
+    initial_sum_cols: tuple[int, int] | None = None,
+    period_start_col: int = CTB_FIRST_PERIOD_COL,
+    default_eta_lead_days: int = ETA_LEAD_DAYS,
+    eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
+) -> list[EtaReportRow]:
+    rows: list[EtaReportRow] = []
+    for part in parts:
+        if not part.open_po:
+            continue
+        demand = (
+            demand_by_part.get(part.part, part.demand)
+            if demand_by_part is not None
+            else part.demand
+        )
+        schedules = eta_schedule_for_records(
+            periods,
+            part.open_po,
+            demand=demand,
+            over_shortage=part.shortage.over_shortage if part.shortage else 0.0,
+            initial_sum_cols=initial_sum_cols,
+            period_start_col=period_start_col,
+            default_lead_days=default_eta_lead_days,
+            lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+        )
+        records_by_key: dict[str, list[OpenPoRecord]] = defaultdict(list)
+        for record in part.open_po:
+            records_by_key[record.key].append(record)
+        for key, records in records_by_key.items():
+            schedule = schedules.get(key, [0.0] * len(periods))
+            po_remain = sum(record.quantity_due for record in records)
+            if not po_remain and not any(schedule):
+                continue
+            rows.append(
+                EtaReportRow(
+                    model=part.model,
+                    part_no=part.part,
+                    po_remain=po_remain,
+                    vendor=_eta_report_vendor(part, records),
+                    eta=schedule,
+                )
+            )
+    return rows
+
+
 def write_auxiliary_sheets(
     wb: Workbook,
     periods: Sequence[Period],
@@ -876,7 +985,7 @@ def write_auxiliary_sheets(
     autosize(ws, maximum=24)
 
     ws = wb.create_sheet(CTB_OPEN_PO_SHEET)
-    headers = ["key", "Item", "Supplier", "Supplier Site", "Quantity Due", "Need By Date"]
+    headers = ["key", "Item", "Supplier", "Supplier Site", "Quantity Due", "Need By Date", "Vendor"]
     for col, value in enumerate(headers, start=1):
         write_text_cell(ws.cell(1, col), value)
     for row_idx, record in enumerate(open_po_records, start=2):
@@ -887,6 +996,7 @@ def write_auxiliary_sheets(
             record.supplier_site,
             record.quantity_due,
             record.need_by_date.isoformat() if record.need_by_date else "",
+            record.vendor,
         ]
         for col, value in enumerate(values, start=1):
             if col == 5:
@@ -1156,7 +1266,11 @@ def _write_static_cells(
         _write_optional_text_cell(ws.cell(row_idx, 4), key_value)
     _write_optional_text_cell(ws.cell(row_idx, 5), supplier_site)
     _write_optional_text_cell(ws.cell(row_idx, 6), part.vendor)
-    _clear_cell(ws.cell(row_idx, 7))
+    if row_type.casefold() == "eta":
+        vendor = po.vendor if po and po.vendor else _fallback_vendor_from_part(part)
+        _write_optional_text_cell(ws.cell(row_idx, 7), vendor)
+    else:
+        _clear_cell(ws.cell(row_idx, 7))
     _clear_cell(ws.cell(row_idx, 8))
     _clear_cell(ws.cell(row_idx, 9))
     if shortage and row_type.lower().startswith("balance"):
@@ -1561,15 +1675,15 @@ def _write_template_part_static(ws, row_idx: int, part: CtbPart, row_type: str) 
     _write_static_cells(ws, row_idx, part, row_type)
 
 
-def _write_template_eta_static(ws, row_idx: int, record: OpenPoRecord | None) -> None:
+def _write_template_eta_static(ws, row_idx: int, part: CtbPart, record: OpenPoRecord | None) -> None:
     if record is None:
         _clear_cell(ws.cell(row_idx, 4))
         _clear_cell(ws.cell(row_idx, 5))
-        _clear_cell(ws.cell(row_idx, 7))
+        _write_optional_text_cell(ws.cell(row_idx, 7), _fallback_vendor_from_part(part))
         return
     _write_formula_cell(ws.cell(row_idx, 4), f"={_cell_ref(row_idx, 3)}&{_cell_ref(row_idx, 5)}")
     _write_optional_text_cell(ws.cell(row_idx, 5), record.supplier_site)
-    _clear_cell(ws.cell(row_idx, 7))
+    _write_optional_text_cell(ws.cell(row_idx, 7), record.vendor or _fallback_vendor_from_part(part))
 
 
 def _formula_sum_col_range(formula) -> tuple[int, int] | None:
@@ -1716,7 +1830,7 @@ def _process_template_group(
             records = open_po_by_key.get(key, [])
             schedule = eta_schedules.get(key, [0.0] * len(template_periods))
             _write_template_part_static(ws, row_idx, part, row_type)
-            _write_template_eta_static(ws, row_idx, records[0] if records else None)
+            _write_template_eta_static(ws, row_idx, part, records[0] if records else None)
             _write_formula_cell(ws.cell(row_idx, CTB_PO_REMAIN_COL), _open_po_lookup_formula(row_idx))
             _write_formula_cell(ws.cell(row_idx, CTB_TOTAL_COL), _sum_period_formula(row_idx, period_columns))
             _write_period_values(ws, row_idx, period_columns, schedule)
@@ -1863,6 +1977,7 @@ def write_ctb_from_template(
             "template_rows": ws.max_row,
             "template_source": template_path,
             "template_sheet": template_name,
+            "eta_periods": tuple(period for _col, period in period_columns),
         }
     finally:
         template_wb.close()
@@ -1875,20 +1990,25 @@ def generate_ctb(
     open_po_path: Path,
     over_shortage_path: Path,
     output_path: Path,
+    eta_output_path: Path | None = None,
     template_path: Path | None = None,
     *,
     dps_cutoff_end: dt.date | None = None,
     default_eta_lead_days: int = ETA_LEAD_DAYS,
     eta_lead_days_by_supplier_site: Mapping[str, int] | None = None,
+    eta_progress_callback: Callable[[], None] | None = None,
 ) -> dict:
     periods, demand_by_parent = read_dps_pp(dps_pp_path)
     bom_rows = read_bom_rows(bom_path, periods, demand_by_parent)
     shortage = read_over_shortage(over_shortage_path)
     open_po = read_open_po(open_po_path)
     parts_by_part, part_order = build_part_map(periods, bom_rows, shortage, open_po)
+    assign_open_po_vendors(open_po, parts_by_part, _read_template_eta_vendor_by_site(template_path))
     parts = filter_ctb_parts(parts_by_part, part_order)
 
     wb = Workbook()
+    eta_periods: Sequence[Period] = periods
+    eta_demand_by_part: dict[str, list[float]] | None = None
     if template_path is not None and workbook_has_any_sheet(
         template_path,
         CTB_TEMPLATE_SHEET_NAMES,
@@ -1904,6 +2024,11 @@ def generate_ctb(
             default_eta_lead_days=default_eta_lead_days,
             eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
         )
+        eta_periods = stats.pop("eta_periods", periods)
+        eta_demand_by_part = {
+            part.part: _values_for_template_periods(periods, part.demand, eta_periods)
+            for part in parts
+        }
     else:
         stats = {
             "mode": "generated",
@@ -1919,6 +2044,26 @@ def generate_ctb(
     copy_dps_pp_sheet(wb, dps_pp_path)
     write_auxiliary_sheets(wb, periods, bom_rows, shortage, open_po)
 
+    eta_info: dict[str, int | Path | None] = {"output": None, "rows": 0, "periods": 0}
+    if eta_output_path is not None:
+        if eta_progress_callback is not None:
+            eta_progress_callback()
+        eta_period_columns = [
+            (CTB_FIRST_PERIOD_COL + index, period)
+            for index, period in enumerate(eta_periods)
+        ]
+        eta_initial_sum_cols = _initial_sum_cols_for_cutoff(eta_period_columns, dps_cutoff_end)
+        eta_rows = build_eta_report_rows(
+            eta_periods,
+            parts,
+            demand_by_part=eta_demand_by_part,
+            initial_sum_cols=eta_initial_sum_cols,
+            period_start_col=CTB_FIRST_PERIOD_COL,
+            default_eta_lead_days=default_eta_lead_days,
+            eta_lead_days_by_supplier_site=eta_lead_days_by_supplier_site,
+        )
+        eta_info = write_eta_report(eta_output_path, eta_periods, eta_rows)
+
     _enable_formula_recalculation(wb)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     unhide_workbook_columns(wb)
@@ -1930,6 +2075,9 @@ def generate_ctb(
         "open_po_source": open_po_path,
         "over_shortage_source": over_shortage_path,
         "template_source": template_path if stats.get("mode") == "template" else None,
+        "eta_output": eta_info["output"],
+        "eta_report_rows": eta_info["rows"],
+        "eta_report_periods": eta_info["periods"],
         "bom_rows": len(bom_rows),
         "over_shortage_rows": len(shortage),
         "open_po_rows": len(open_po),

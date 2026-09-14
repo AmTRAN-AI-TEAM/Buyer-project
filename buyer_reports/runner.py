@@ -62,6 +62,7 @@ from .dps import (
     generate_merged_dps,
 )
 from .dps_pp import DPS_PP_OUTPUT_NAME, generate_dps_pp
+from .eta import ETA_OUTPUT_NAME
 from .pp import PP_COMPARE_SHEETS, PP_TIDY_SHEET, generate_pp
 from .raken_adapter import (
     find_raken_reference_workbook,
@@ -2317,11 +2318,20 @@ def run_ctb_report(
     dps_cutoff_end: dt.date | None = None,
 ) -> dict:
     out_path = context.out_dir / CTB_OUTPUT_NAME
+    eta_out_path = context.out_dir / ETA_OUTPUT_NAME
     dps_pp_path = context.out_dir / DPS_PP_OUTPUT_NAME
     title = f"{context.label} CTB" if context.name else "CTB"
+    eta_title = f"{context.label} ETA" if context.name else "ETA"
+    progress_steps_done = 0
+
+    def progress_step(label: str) -> None:
+        nonlocal progress_steps_done
+        if progress is not None:
+            progress.step(label)
+        progress_steps_done += 1
+
     context.out_dir.mkdir(parents=True, exist_ok=True)
-    if progress is not None:
-        progress.step(f"{title}: 檢查來源")
+    progress_step(f"{title}: 檢查來源")
 
     try:
         if not dps_pp_path.is_file():
@@ -2339,16 +2349,17 @@ def run_ctb_report(
         if context.name.casefold() == "raken":
             reference_path = find_raken_reference_workbook(context.input_dir)
             shortage_path = find_raken_shortage_workbook(context.input_dir)
-            if progress is not None:
-                progress.step(f"{title}: 產出報表")
+            progress_step(f"{title}: 產出 CTB")
             info = generate_raken_ctb(
                 dps_pp_path=dps_pp_path,
                 reference_path=reference_path,
                 shortage_path=shortage_path,
                 output_path=out_path,
+                eta_output_path=eta_out_path,
                 dps_cutoff_end=dps_cutoff_end,
                 default_eta_lead_days=eta_default_days,
                 eta_lead_days_by_supplier_site=eta_lead_days_by_site,
+                eta_progress_callback=lambda: progress_step(f"{eta_title}: 產出報表"),
             )
             log(f"\n--- {title} ---")
             log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
@@ -2397,6 +2408,11 @@ def run_ctb_report(
                 )
             log("  輸出內容        ：僅 CTB 工作表")
             log(f"  產出檔          ：{out_path}")
+            if info.get("eta_output"):
+                log(
+                    f"  ETA 產出檔      ：{info['eta_output']}（"
+                    f"{info['eta_report_rows']} 列，期間 {info['eta_report_periods']} 欄）"
+                )
             for warning_message in info.get("warnings", []):
                 warn(f"{title}：{warning_message}")
             if args.compare:
@@ -2406,6 +2422,7 @@ def run_ctb_report(
                 "kind": "CTB",
                 "ok": True,
                 "output": out_path,
+                "eta_output": info.get("eta_output"),
             }
 
         bom_path = find_workbook_with_sheet(context.input_dir, "BOM1", f"{title} BOM1")
@@ -2419,18 +2436,19 @@ def run_ctb_report(
             context.input_dir,
             CTB_TEMPLATE_SHEET_NAMES,
         )
-        if progress is not None:
-            progress.step(f"{title}: 產出報表")
+        progress_step(f"{title}: 產出 CTB")
         info = generate_ctb(
             dps_pp_path=dps_pp_path,
             bom_path=bom_path,
             open_po_path=open_po_path,
             over_shortage_path=over_shortage_path,
             output_path=out_path,
+            eta_output_path=eta_out_path,
             template_path=template_path,
             dps_cutoff_end=dps_cutoff_end,
             default_eta_lead_days=eta_default_days,
             eta_lead_days_by_supplier_site=eta_lead_days_by_site,
+            eta_progress_callback=lambda: progress_step(f"{eta_title}: 產出報表"),
         )
         log(f"\n--- {title} ---")
         log(f"  DPS+PP 來源     ：{info['dps_pp_source'].name}")
@@ -2479,6 +2497,11 @@ def run_ctb_report(
             f"設定檔 {eta_config_path}"
         )
         log(f"  產出檔          ：{out_path}")
+        if info.get("eta_output"):
+            log(
+                f"  ETA 產出檔      ：{info['eta_output']}（"
+                f"{info['eta_report_rows']} 列，期間 {info['eta_report_periods']} 欄）"
+            )
         if args.compare:
             warn(f"{title} 目前尚未支援 CTB 逐格對帳，已略過 --compare。")
         return {
@@ -2486,10 +2509,15 @@ def run_ctb_report(
             "kind": "CTB",
             "ok": True,
             "output": out_path,
+            "eta_output": info.get("eta_output"),
         }
     except (SystemExit, Exception) as exc:  # noqa: BLE001 - 單一客戶 CTB 失敗不阻斷其他報表
-        if progress is not None:
-            progress.step(f"{title}: 略過報表")
+        while progress_steps_done < 3:
+            progress_step(
+                f"{title}: 略過報表"
+                if progress_steps_done < 2
+                else f"{eta_title}: 略過報表"
+            )
         warn(f"{title} 無法產出，已略過。原因：{_error_message(exc)}")
         return {
             "customer": context.name,
@@ -2557,15 +2585,19 @@ def run_reports(args) -> bool:
         if _ctb_task_enabled_for_context(args, context):
             tasks.append((context, "CTB", run_ctb_report))
 
+    def progress_steps_for_runner(runner) -> int:
+        return 3 if runner is run_ctb_report else 2
+
     results = []
     success_by_context_kind = {}
     dps_pp_cutoff_by_context: dict[str, dt.date] = {}
-    with Progress(total=len(tasks) * 2) as progress:
+    with Progress(total=sum(progress_steps_for_runner(runner) for _context, _name, runner in tasks)) as progress:
         for context, _name, runner in tasks:
             if runner is run_ctb_report and not success_by_context_kind.get((context.name, "DPS+PP")):
                 if progress is not None:
                     progress.step(f"{context.label} CTB: 檢查來源")
                     progress.step(f"{context.label} CTB: 略過報表")
+                    progress.step(f"{context.label} ETA: 略過報表")
                 result = {
                     "customer": context.name,
                     "kind": "CTB",
@@ -2597,6 +2629,9 @@ def run_reports(args) -> bool:
         label = f"{result['customer']} {result['kind']}" if result.get("customer") else result["kind"]
         if result["ok"]:
             log(f"  {label}：成功 → {result['output']}")
+            if result.get("eta_output"):
+                eta_label = f"{result['customer']} ETA" if result.get("customer") else "ETA"
+                log(f"  {eta_label}：成功 → {result['eta_output']}")
         else:
             log(f"  {label}：失敗 / 已略過 → {result['error']}")
             if result.get("stale_output"):
